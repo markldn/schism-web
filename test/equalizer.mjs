@@ -1,0 +1,10 @@
+import fs from 'fs';import assert from 'assert/strict';
+const root=new URL('../',import.meta.url),url=s=>'data:text/javascript;base64,'+Buffer.from(s).toString('base64');
+const src=fs.readFileSync(new URL('js/equalizer.js',root),'utf8').replace("'./app.js'",JSON.stringify(url(fs.readFileSync(new URL('js/app.js',root),'utf8'))));
+const m=await import(url(src));let b=new Int32Array([310,-310]);
+m.normalize_stereo({},b,1);assert.deepEqual([...b],[310,-310]);
+m.audio_settings.master={left:15,right:0};m.normalize_stereo({},b,1);assert.deepEqual([...b],[150,0]);
+m.audio_settings.master={left:0,right:0};m.normalize_mono({},b,2);assert.deepEqual([...b],[0,0]);
+m.set_eq_gains([32],1,[120],1,44100);assert.equal(m.eq[0].gain,1.5);assert.equal(m.eq[6].enabled,1);assert.equal(m.eq[1].enabled,0);
+assert.ok(Number.isFinite(m.eq[0].a0));m.eq[0].x1=99;m.initialize_eq(1,44100);assert.equal(m.eq[0].x1,0);
+console.log('Master normalization, mute, EQ band setup and history reset checks passed');

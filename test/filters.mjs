@@ -1,0 +1,11 @@
+import fs from 'fs';import assert from 'assert/strict';
+const root=new URL('../',import.meta.url),url=s=>'data:text/javascript;base64,'+Buffer.from(s).toString('base64');
+let src=fs.readFileSync(new URL('js/filters.js',root),'utf8');
+for(const [p,f] of [['./app.js','js/app.js'],['./gen/tables.js','js/gen/tables.js']])src=src.replace("'"+p+"'",JSON.stringify(url(fs.readFileSync(new URL(f,root),'utf8'))));
+const {setup_channel_filter}=await import(url(src));
+const c={cutoff:127,resonance:0,flags:0x2004000,filter_y:[new Int32Array([1,2]),new Int32Array([3,4])]};
+setup_channel_filter(c,1,256,44100);assert.equal(c.flags&0x4000,0);assert.equal(c.filter_y[0][0],1);
+c.cutoff=64;c.resonance=32;setup_channel_filter(c,0,256,44100);assert.ok(c.flags&0x4000);assert.equal(c.filter_y[0][0],1);
+assert.ok(c.filter_a0>0);assert.ok(c.filter_b1<0);
+setup_channel_filter(c,1,256,44100);assert.deepEqual([...c.filter_y[0],...c.filter_y[1]],[0,0,0,0]);
+console.log('Filter bypass, activation, coefficient signs and history reset checks passed');

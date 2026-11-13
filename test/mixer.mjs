@@ -1,0 +1,41 @@
+import fs from 'fs';import assert from 'assert/strict';
+const root=new URL('../',import.meta.url),url=s=>'data:text/javascript;base64,'+Buffer.from(s).toString('base64');
+const src=fs.readFileSync(new URL('js/mixer.js',root),'utf8').replace("'./app.js'",JSON.stringify(url(fs.readFileSync(new URL('js/app.js',root),'utf8')))).replace("'./gen/interpolation.js'",JSON.stringify(url(fs.readFileSync(new URL('js/gen/interpolation.js',root),'utf8'))));
+const m=await import(url(src)),w=n=>BigInt(n)<<32n;
+const c={flags:0,length:10,loop_start:2,loop_end:10,position:{v:w(7)},increment:{v:w(1)}};
+const state={smp_ptr:new Int8Array(10),maxsamples:100,lookahead_ptr:null};
+assert.equal(m.get_sample_count(state,c,20),3);
+c.position.v=w(10);assert.equal(m.get_sample_count(state,c,20),0);
+c.flags=2;assert.equal(m.get_sample_count(state,c,20),8);assert.equal(c.position.v,w(2));
+c.flags=6;c.position.v=w(10);assert.equal(m.get_sample_count(state,c,20),7);assert.equal(c.position.v,w(9));assert.equal(c.increment.v,-w(1));
+c.position.v=w(1);m.get_sample_count(state,c,2);assert.equal(c.increment.v,w(1));assert.equal(c.flags&128,0);
+console.log('Mixer chunk boundary, forward wrap and ping-pong reflection checks passed');
+const data=new Int8Array(256),lc={flags:2,length:100,loop_start:20,loop_end:100,position:{v:w(90)},increment:{v:w(1)},ptr_sample:{data,length:100,flags:0},current_sample_data:data};
+const ls={};m.mix_loop_state_init(ls,lc);assert.equal(ls.lookahead_start,84);assert.equal(ls.lookahead_ptr.byteOffset,48);assert.equal(ls.maxsamples,8192);
+assert.equal(m.get_sample_count(ls,lc,30),10);assert.equal(lc.current_sample_data,ls.lookahead_ptr);
+lc.position.v=w(80);assert.equal(m.get_sample_count(ls,lc,30),4);assert.equal(lc.current_sample_data,data);
+lc.position.v=w(20);lc.flags|=0x40000000;m.get_sample_count(ls,lc,10);assert.equal(lc.current_sample_data.byteOffset,128);
+console.log('Loop lookahead address routing, boundary chunking and post-wrap data offset passed');
+const kernel={flags:0,current_sample_data:new Int8Array([0,64,-64,0]),position:{v:0n},increment:{v:w(1)},vu_meter:0,left_volume:2,right_volume:3};
+const output=new Int32Array(6);m.mix_kernel(kernel,output,0,3);
+assert.deepEqual([...output],[0,0,49152,32768,-49152,-32768]);assert.equal(kernel.position.v,w(3));
+kernel.position.v=w(1)+(1n<<31n);kernel.increment.v=0n;const linear=new Int32Array(2);
+m.mix_kernel(kernel,linear,0,1,1);assert.deepEqual([...linear],[0,0]);
+kernel.flags=1|64;kernel.current_sample_data=new Int16Array([1000,-1000,2000,-2000]);kernel.position.v=0n;kernel.increment.v=w(1);
+const stereo=new Int32Array(4);m.mix_kernel(kernel,stereo,0,2);assert.deepEqual([...stereo],[3000,-2000,6000,-4000]);
+console.log('Nearest/linear 8/16-bit mono/stereo kernel sample scaling and channel order passed');
+const skipped={flags:0,current_sample_data:new Int8Array([-64,0,64,0]),position:{v:0n},right_volume_new:2,left_volume_new:2,vu_meter:0};
+m.fake_vu_meter(skipped,2,{v:w(2)});assert.equal(skipped.vu_meter,32768);
+skipped.vu_meter=99999;m.fake_vu_meter(skipped,2,{v:w(2)});assert.equal(skipped.vu_meter,99999);
+console.log('Skipped-voice approximate VU scaling and peak retention passed');
+const guarded=new Int16Array(64).fill(1000);
+const smooth={flags:1,current_sample_data:guarded.subarray(16),position:{v:w(2)+(1n<<31n)},increment:{v:0n},vu_meter:0,left_volume:1,right_volume:1};
+for(const mode of [2,3]){const out=new Int32Array(2);m.mix_kernel(smooth,out,0,1,mode);assert.ok(Math.abs(out[0]-1000)<=1);assert.equal(out[0],out[1]);}
+console.log('Spline/FIR constant-signal interpolation and stereo gain consistency passed');
+for(const bits of [8,16])for(const channels of [1,2]){
+const Type=bits===8?Int8Array:Int16Array,backing=new Type(100).fill(bits===8?50:1000),input=backing.subarray(16),result=new Type(12*channels);
+const name='Resample'+(channels===1?'Mono':'Stereo')+bits+'BitFirFilter';
+m[name](input,result,8,12);assert.ok([...result].every(value=>Math.abs(value-(bits===8?50:1000))<=1));
+}
+assert.throws(()=>m.ResampleMono8BitFirFilter(new Int8Array(4),new Int8Array(0),4,0),RangeError);
+console.log('FIR sample resizing preserves constant mono/stereo 8/16-bit signals');

@@ -1,0 +1,15 @@
+import fs from 'fs';import assert from 'assert/strict';
+const source=fs.readFileSync(new URL('../js/sndfile.js',import.meta.url),'utf8');
+const m=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+const negative=m.csf_smp_pos(-1,0x80000000),positive=m.csf_smp_pos(1,0);
+assert.equal(negative.v,-0x80000000n);assert.equal(m.csf_smp_pos_get_whole(negative),-1);
+assert.equal(m.csf_smp_pos_get_frac(negative),0x80000000);
+assert.equal(m.csf_smp_pos_add(negative,positive).v,0x80000000n);
+assert.equal(negative.v,-0x80000000n);
+assert.equal(m.csf_smp_pos_ratio(1,2).v,0x80000000n);
+assert.equal(m.csf_smp_pos_negate(negative).v,0x80000000n);
+assert.equal(m.csf_smp_pos_add(m.csf_smp_pos(2147483647,0xffffffff),m.csf_smp_pos(0,1)).v,-0x8000000000000000n);
+assert.equal(m.csf_calculate_tick_length({mix_frequency:44100,tempo_factor:128,current_tempo:125}),882);
+assert.equal(m.csf_ticks_to_samples(6,44100,125),5292);
+assert.equal(m.csf_get_current_tick({current_speed:6,tick_count:8}),-2);
+console.log('Fixed-point sign, fraction, value semantics, wrapping and tick timing checks passed');
