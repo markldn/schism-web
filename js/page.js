@@ -7,12 +7,14 @@
 // charset.c), the top-right visualiser, the clock, and the values in
 // redraw_top_info, which wait for the song and player modules.
 
-import { status, PAGE, HELP, NEED_UPDATE, INVERTED_PALETTE, CLASSIC_MODE, SONG_NEEDS_SAVE,
+import { status, tracker, PAGE, HELP, NEED_UPDATE, INVERTED_PALETTE, CLASSIC_MODE, SONG_NEEDS_SAVE,
 	DIALOG_MENU, DIALOG_BOX, DIALOG_NONE } from "./state.js";
-import { draw_char, draw_text, draw_text_len, draw_text_bios_len, draw_fill_chars, draw_box,
+import { draw_char, draw_text, draw_text_len, draw_text_bios_len, draw_fill_chars, draw_box, draw_vu_meter,
+	vgamem_ovl_alloc, vgamem_ovl_clear, vgamem_ovl_apply, draw_sample_data_rect,
 	DEFAULT_FG, BOX_THIN, BOX_INNER, BOX_INSET } from "./vgamem.js";
 import { KEYSYM, KEYMOD, KEY_PRESS, KEY_RELEASE, NO_MODIFIER, MOUSE_NONE, MOUSE_CLICK, MOUSE_DBLCLICK,
 	kbd_get_current_octave, kbd_set_current_octave } from "./keyboard.js";
+import { str_from_num99 } from "./widget.js";
 import { ui_set, widget_draw_widget, widget_handle_key, widget_handle_text_input, widget_change_focus_to,
 	widget_create_togglebutton, widget_create_button, widget_create_thumbbar, widget_create_numentry,
 	widget_togglebutton_set, active_widget, ui } from "./widget.js";
@@ -21,7 +23,7 @@ import { dialog_draw, dialog_create, dialog_create_custom, dialog_destroy_all, d
 import { font_reset } from "./vgamem.js";
 import { VIS_SENTINEL, DISKWRITER_ACTIVE, STARTUP_FONTEDIT, DIALOG_OK, DIALOG_OK_CANCEL } from "./state.js";
 import { menu_draw, menu_show, menu_hide, menu_handle_key } from "./menu.js";
-import { app, provide, is_ported } from "./app.js";
+import { app, provide, is_ported, optional } from "./app.js";
 
 export const SCHISM_VERSION = "20261111"; // upstream commit date this port tracks
 
@@ -64,7 +66,7 @@ const TITLES = {
 export const pages = [];
 for (const [name, n] of Object.entries(PAGE)) if (name !== "MAX") pages[n] = make_page(TITLES[name]);
 
-let instrument_list_subpage = PAGE.INSTRUMENT_LIST_GENERAL;
+export const ilist = { subpage: PAGE.INSTRUMENT_LIST_GENERAL };
 const active_page = () => pages[status.current_page];
 
 // ---------------------------------------------------------------------------
@@ -90,7 +92,41 @@ export function status_text_redraw() {
 	if (status_text) {
 		(status_bios ? draw_text_bios_len : draw_text_len)(status_text, 60, 2, 9, 0, 2);
 	}
-	// TODO(port): playing / pattern-loop / channel-count status lines (needs the player)
+	else draw_playing_status();
+}
+
+function draw_playing_status() {
+	const mode = app.song_get_mode();
+	if (mode !== 1 && mode !== 2) {
+		if (mode === 4 && app.song_get_playing_channels() > 1) {
+			let pos = 2;
+			pos += draw_text("Playing, ", 2, 9, 0, 2);
+			pos += draw_text(String(app.song_get_playing_channels()), pos, 9, 3, 2);
+			draw_text(" Channels", pos, 9, 0, 2);
+		}
+		return;
+	}
+	const song = app.current_song();
+	let pos = 2;
+	const pattern = app.song_get_playing_pattern();
+	if (song.repeat_count < 1 || (status.flags & CLASSIC_MODE)) pos += draw_text("Playing", pos, 9, 0, 2);
+	else { pos += draw_text("Loop: ", pos, 9, 0, 2); pos += draw_text(String(song.repeat_count), pos, 9, 3, 2); }
+	if (mode === 1) {
+		pos += draw_text(", Order: ", pos, 9, 0, 2);
+		pos += draw_text(String(app.song_get_current_order()), pos, 9, 3, 2);
+		draw_char(47, pos++, 9, 0, 2);
+		pos += draw_text(String(app.csf_last_order(song)), pos, 9, 3, 2);
+	}
+	pos += draw_text(", Pattern: ", pos, 9, 0, 2);
+	pos += draw_text(String(pattern), pos, 9, 3, 2);
+	pos += draw_text(", Row: ", pos, 9, 0, 2);
+	pos += draw_text(String(app.song_get_current_row()), pos, 9, 3, 2);
+	draw_char(47, pos++, 9, 0, 2);
+	pos += draw_text(String(app.song_get_pattern(pattern)), pos, 9, 3, 2);
+	draw_char(44, pos++, 9, 0, 2);
+	draw_char(0, pos++, 9, 0, 2);
+	pos += draw_text(String(app.song_get_playing_channels()), pos, 9, 3, 2);
+	if (draw_text_len(" Channels", 62 - pos, pos, 9, 0, 2) < 9) draw_char(16, 61, 9, 1, 2);
 }
 
 /* whether a timed-out message still needs one more redraw to disappear */
@@ -220,31 +256,92 @@ function draw_top_info_const() {
 
 const num3 = (n) => String(n).padStart(3, "0");
 
-// TODO(port): these read the song/player once those modules exist. The
-// placeholder values are those of a freshly created empty song.
-function redraw_top_info() {
-	draw_text("    Sample", 39, 3, 0, 2);
-	draw_text("01", 50, 3, 5, 0);
-	draw_text_len("", 25, 53, 3, 5, 0);
+export function update_current_instrument() {
+	let ins_mode, n, name = null;
+	const cp = status.current_page;
+	if (page_is_instrument_list(cp) || cp === PAGE.SAMPLE_LIST || cp === PAGE.LOAD_SAMPLE || cp === PAGE.LIBRARY_SAMPLE
+		|| (!(status.flags & CLASSIC_MODE) && (cp === PAGE.ORDERLIST_PANNING || cp === PAGE.ORDERLIST_VOLUMES)))
+		ins_mode = 0;
+	else ins_mode = app.song_is_instrument_mode();
+	if (ins_mode) {
+		draw_text("Instrument", 39, 3, 0, 2);
+		n = app.instrument_get_current();
+		if (n > 0) name = app.song_get_instrument(n).name;
+	} else {
+		draw_text("    Sample", 39, 3, 0, 2);
+		n = app.sample_get_current();
+		if (n > 0) name = app.song_get_sample(n).name;
+	}
+	if (n > 0) {
+		draw_text(str_from_num99(n), 50, 3, 5, 0);
+		draw_text_len(name || "", 25, 53, 3, 5, 0);
+	} else {
+		draw_text("..", 50, 3, 5, 0);
+		draw_text(".........................", 53, 3, 5, 0);
+	}
+}
 
-	draw_text_len("", 18, 12, 4, 5, 0); // file name
-	draw_text_len("", 25, 12, 3, 5, 0); // song title
+function redraw_top_info() {
+	update_current_instrument();
+	draw_text_len(app.song_get_basename(), 18, 12, 4, 5, 0);
+	draw_text_len(app.current_song().title, 25, 12, 3, 5, 0);
 	if ((status.flags & (CLASSIC_MODE | SONG_NEEDS_SAVE)) === SONG_NEEDS_SAVE)
 		draw_char(43, 29, 4, 4, 0);
-
-	draw_text(num3(0), 12, 5, 5, 0); draw_text(num3(0), 16, 5, 5, 0); // order / total
-	draw_text(num3(0), 12, 6, 5, 0); draw_text(num3(0), 16, 6, 5, 0); // pattern / total
-	draw_text(num3(0), 12, 7, 5, 0); draw_text(num3(63), 16, 7, 5, 0); // row / rows
-
-	draw_text(num3(6), 50, 4, 5, 0);
-	draw_text(num3(125), 54, 4, 5, 0);
+	app.update_current_order();
+	app.update_current_pattern();
+	app.update_current_row();
+	draw_text(num3(app.song_get_current_speed()), 50, 4, 5, 0);
+	draw_text(num3(app.song_get_current_tempo()), 54, 4, 5, 0);
 	draw_char(48 + kbd_get_current_octave(), 50, 5, 5, 0);
 }
 
-function draw_vis() {
-	// TODO(port): oscilloscope / VU / FFT / fakemem visualisers (needs audio)
+// clock (check_time / draw_time)
+const current_time = { h: -1, m: -1, s: -1 };
+const start_time = performance.now();
+export function check_time() {
+	let td = status.time_display;
+	const playing = app.song_get_mode() & (1 | 2);
+	if (td === 1) td = playing ? 7 : 4;
+	else if (td === 2) td = playing ? 7 : 5;
+	else if (td === 3) td = playing ? 7 : 0;
+	let h = 0, m = 0, sec = 0;
+	if (td === 7) sec = app.song_get_current_time();
+	else if (td === 4) sec = Math.trunc((performance.now() - start_time) / 1000);
+	else if (td === 5) { const d = new Date(); h = d.getHours(); m = d.getMinutes(); sec = d.getSeconds(); }
+	if (td === 7 || td === 4) { m = Math.trunc(sec / 60); h = Math.trunc(m / 60); }
+	if (h === current_time.h && m === current_time.m && sec === current_time.s) return 0;
+	Object.assign(current_time, { h, m, s: sec });
+	return 1;
+}
+function draw_time() {
+	const playing = app.song_get_mode() & (1 | 2);
+	if (status.time_display === 0 || (status.time_display === 3 && !playing)) return;
+	draw_text(`${String(current_time.h % 1000).padStart(3, " ")}:${String(current_time.m % 60).padStart(2, "0")}:${String(current_time.s % 60).padStart(2, "0")}`, 69, 9, 0, 2);
+}
+
+const vis_overlay = vgamem_ovl_alloc({ x1: 63, y1: 6, x2: 77, y2: 7 });
+function draw_vis_box() {
 	draw_box(62, 5, 78, 8, BOX_THIN | BOX_INNER | BOX_INSET);
 	draw_fill_chars(63, 6, 77, 7, DEFAULT_FG, 0);
+}
+function draw_vis() {
+	if (status.flags & CLASSIC_MODE) { draw_text("FreeMem 640k", 63, 6, 0, 2); draw_text("FreeEMS 65536k", 63, 7, 0, 2); return; }
+	switch (status.vis_style) {
+	case 1: draw_text("   Song    0k", 63, 6, 0, 2); draw_text("Samples    0k", 63, 7, 0, 2); break;
+	case 2: case 4: case 5: {
+		draw_vis_box();
+		const buf = app.song_get_vis_buffer();
+		draw_sample_data_rect(vis_overlay, buf, 16, buf.length, 2, status.vis_style === 4 ? 1 : 2);
+		break;
+	}
+	case 3: {
+		const [l, r] = app.song_get_vu_meter();
+		draw_vis_box();
+		draw_vu_meter(63, 6, 15, l >> 1, 5, 4);
+		draw_vu_meter(63, 7, 15, r >> 1, 5, 4);
+		break;
+	}
+	}
 }
 
 /* this completely redraws everything. */
@@ -267,7 +364,7 @@ export function redraw_screen() {
 		redraw_top_info();
 
 		draw_vis();
-		// TODO(port): draw_time()
+		draw_time();
 		status_text_redraw();
 	}
 
@@ -282,7 +379,20 @@ export function set_page(new_page) {
 	if (new_page !== prev_page) status.previous_page = prev_page;
 	status.current_page = new_page;
 
-	// TODO(port): _set_from_f3 / _set_from_f4 (sample <-> instrument sync)
+	if (new_page === PAGE.SAMPLE_LIST || new_page === PAGE.LOAD_SAMPLE || new_page === PAGE.LIBRARY_SAMPLE) {
+		// _set_from_f4
+		const pp = status.previous_page;
+		if (!(pp === PAGE.SAMPLE_LIST || pp === PAGE.LOAD_SAMPLE || pp === PAGE.LIBRARY_SAMPLE
+			|| (!(status.flags & CLASSIC_MODE) && (pp === PAGE.ORDERLIST_PANNING || pp === PAGE.ORDERLIST_VOLUMES)))
+			&& app.song_is_instrument_mode()) optional("sample_synchronize_to_instrument");
+	} else if (page_is_instrument_list(new_page)) {
+		// _set_from_f3
+		const pp = status.previous_page;
+		if (pp === PAGE.SAMPLE_LIST || (!(status.flags & CLASSIC_MODE) && (pp === PAGE.ORDERLIST_PANNING || pp === PAGE.ORDERLIST_VOLUMES))) {
+			if (app.song_is_instrument_mode()) optional("instrument_synchronize_to_sample");
+			else app.instrument_set(app.sample_get_current());
+		}
+	}
 
 	if (new_page !== PAGE.HELP) status.current_help_index = active_page().help_index;
 
@@ -425,7 +535,6 @@ export function handle_text_input(text_input) {
 // global keys. returns 1 if the key was handled
 
 let fontedit_return_page = PAGE.PATTERN_EDITOR;
-let playback_tracing = 0;
 
 function handle_key_global(k) {
 	const ctrl = k.mod & KEYMOD.CTRL, shift = k.mod & KEYMOD.SHIFT, alt = k.mod & KEYMOD.ALT;
@@ -468,7 +577,7 @@ function handle_key_global(k) {
 
 			if (ins_mode) {
 				minipop_slide(app.instrument_get_current(), "Instrument",
-					status.current_page === instrument_list_subpage ? 1 : 0, 99, app.instrument_set, null, 58, 3);
+					status.current_page === ilist.subpage ? 1 : 0, 99, app.instrument_set, null, 58, 3);
 			} else {
 				minipop_slide(app.sample_get_current(), "Sample",
 					status.current_page === PAGE.SAMPLE_LIST ? 1 : 0, 99, app.sample_set, null, 58, 3);
@@ -480,11 +589,11 @@ function handle_key_global(k) {
 					app.set_current_row, null, 14, 7);
 				return 1;
 			} else if (k.y === 6) {
-				minipop_slide(app.get_current_pattern(), "Pattern", 0, app.csf_get_num_patterns(),
+				minipop_slide(app.get_current_pattern(), "Pattern", 0, app.csf_get_num_patterns(app.current_song()),
 					app.set_current_pattern, null, 14, 6);
 				return 1;
 			} else if (k.y === 5) {
-				minipop_slide(app.get_current_order(), "Order", 0, app.csf_get_num_orders(),
+				minipop_slide(app.get_current_order(), "Order", 0, app.csf_get_num_orders(app.current_song()),
 					app.set_current_order, null, 14, 5);
 				return 1;
 			}
@@ -648,9 +757,9 @@ function handle_key_global(k) {
 	case KEYSYM.F4:
 		if (!no_dialog) return 0;
 		if (NO_MODIFIER(k.mod)) {
-			if (status.current_page === instrument_list_subpage) return 0;
+			if (status.current_page === ilist.subpage) return 0;
 			mp_finish();
-			if (pressed) set_page(instrument_list_subpage);
+			if (pressed) set_page(ilist.subpage);
 		} else {
 			if (shift) return 0;
 			mp_finish();
@@ -809,8 +918,8 @@ function handle_key_global(k) {
 		if (alt) {
 			if (pressed) app.midi_toggle_record(); // flashes "MIDI Input Disabled/Enabled"
 		} else if (pressed) {
-			playback_tracing = playback_tracing ? 0 : 1;
-			status_text_flash("Playback tracing " + (playback_tracing ? "enabled" : "disabled"));
+			tracker.playback_tracing = tracker.playback_tracing ? 0 : 1;
+			status_text_flash("Playback tracing " + (tracker.playback_tracing ? "enabled" : "disabled"));
 		}
 		return 1;
 	case KEYSYM.PAUSE:
@@ -995,7 +1104,13 @@ function timejump_draw() {
 
 function timejump_ok() {
 	const sec = timejump_widgets[0].d.value * 60 + timejump_widgets[1].d.value;
-	app.song_jump_to_time(sec); // TODO(port): song_get_at_time + set order/pattern/row + pattern editor
+	const [order, row] = app.song_get_at_time(sec);
+	app.set_current_order(order);
+	const pat = app.current_song().orderlist[order];
+	if (pat < 200) app.set_current_pattern(pat);
+	app.set_current_row(row);
+	if (app.song_get_mode() & 1) app.song_start_at_order(order, row);
+	set_page(PAGE.PATTERN_EDITOR);
 }
 
 export function show_song_timejump() {
@@ -1021,15 +1136,43 @@ export function show_length_dialog(label, length) {
 }
 
 export function show_song_length() {
-	show_length_dialog("Total song time", app.csf_get_length());
+	show_length_dialog("Total song time", app.song_get_length());
+}
+
+export function set_previous_instrument() {
+	if (app.song_is_instrument_mode()) app.instrument_set(app.instrument_get_current() - 1);
+	else app.sample_set(app.sample_get_current() - 1);
+}
+export function set_next_instrument() {
+	if (app.song_is_instrument_mode()) app.instrument_set(app.instrument_get_current() + 1);
+	else app.sample_set(app.sample_get_current() + 1);
+}
+export function playback_update() {
+	if (check_time() || app.song_get_mode()) status.flags |= NEED_UPDATE;
+	if (active_page().playback_update) active_page().playback_update();
+}
+export function main_song_changed_cb() {
+	app.set_current_order(0);
+	let n = app.current_song().orderlist[0];
+	if (n > 199) n = 0;
+	app.set_current_pattern(n);
+	app.set_current_row(0);
+	app.song_save_channel_states();
+	for (let i = pages.length - 1; i >= 0; i--) if (pages[i].song_changed_cb) pages[i].song_changed_cb();
+	status.flags |= NEED_UPDATE;
+}
+export function main_song_mode_changed_cb() {
+	for (const p of pages) if (p.song_mode_changed_cb) p.song_mode_changed_cb();
 }
 
 provide({
+	set_previous_instrument, set_next_instrument, playback_update, main_song_changed_cb,
+	main_song_mode_changed_cb, update_current_instrument, check_time,
 	set_page, redraw_screen, status_text_flash, status_text_flash_bios, handle_key, handle_text_input,
 	new_song_dialog, show_exit_prompt, show_song_timejump, show_song_length, show_length_dialog, savecheck,
 	page_is_instrument_list,
 	active_page: () => pages[status.current_page],
-	instrument_list_page: () => instrument_list_subpage,
+	instrument_list_page: () => ilist.subpage,
 	toggle_display_fullscreen: () => {
 		if (document.fullscreenElement) document.exitFullscreen();
 		else document.documentElement.requestFullscreen().catch(() => {});

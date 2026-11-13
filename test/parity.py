@@ -21,6 +21,7 @@ CHROME = "/usr/bin/google-chrome"
 # (name, keys to press after reaching the pattern editor, [(region name, x1, y1, x2, y2 in cells)])
 TOP = ("top info", 0, 0, 61, 8)          # excludes the visualiser box and the clock
 TITLE = ("title bar", 0, 10, 79, 11)
+BODY = ("page body", 0, 10, 79, 48)  # row 49 is border only; the reference draws its cursor there
 CASES = [
     ("pattern-frame", [], [TOP, TITLE]),
     ("main-menu", ["Escape"], [TOP, TITLE, ("main menu", 6, 11, 38, 46)]),
@@ -39,6 +40,23 @@ CASES = [
     ("octave-keys", ["Alt+End", "Alt+End", "Alt+Home", "Alt+End"], [TOP]),
     ("sample-list-frame", ["F3"], [TOP, TITLE]),
     ("load-module-frame", ["F9"], [TOP, TITLE]),
+    # whole page bodies of the ported pages (empty song)
+    ("pattern-editor", [], [TOP, BODY]),
+    ("pattern-cursor", ["ArrowRight", "ArrowRight", "ArrowDown", "ArrowDown", "Tab", "Tab"], [BODY]),
+    ("pattern-notes", ["q", "w", "e", "ArrowRight", "4", "Tab", "z", "x"], [BODY]),
+    ("sample-list", ["F3"], [TOP, BODY]),
+    ("instrument-general", ["F4"], [BODY]),
+    ("instrument-volume", ["F4", "F4"], [BODY]),
+    ("instrument-panning", ["F4", "F4", "F4"], [BODY]),
+    ("instrument-pitch", ["F4", "F4", "F4", "F4"], [BODY]),
+    ("order-pan", ["F11"], [BODY]),
+    ("order-vol", ["F11", "F11"], [BODY]),
+    ("info-page", ["F5", "F8"], [BODY]),
+    ("song-vars", ["F12"], [("song vars", 0, 10, 79, 40)]),  # directory rows differ by design (browser store)
+    ("message", ["Shift+F9"], [BODY]),
+    ("help", ["F1"], [BODY]),
+    ("config", ["Control+F1"], [("config", 0, 10, 79, 26)]),
+    ("pattern-options", ["F2"], [("dialog", 10, 18, 69, 43)]),
 ]
 
 def serve(directory, port):
@@ -67,10 +85,14 @@ def main():
             # the reference canvas fills the area under its 29px toolbar: make that exactly 640x400
             ref = b.new_context(viewport={"width": 640, "height": 429}).new_page()
 
+            only = [a for a in sys.argv[2:]]
             for name, keys, regions in CASES:
-                js.goto("http://127.0.0.1:8778/"); js.wait_for_timeout(400)
+                if only and name not in only: continue
+                js.goto("http://127.0.0.1:8778/"); js.wait_for_timeout(600)
+                js.keyboard.press("Enter"); js.wait_for_timeout(150)     # dismiss the About box
+                js.keyboard.press("F2"); js.wait_for_timeout(150)
                 ref.goto("http://127.0.0.1:8779/"); ref.wait_for_timeout(2500)
-                ref.mouse.move(639, 428)
+                ref.mouse.move(639, 428)  # parks the reference cursor on the bottom-right border pixel
                 ref.keyboard.press("Enter"); ref.wait_for_timeout(200)   # dismiss the About box
                 ref.keyboard.press("F2"); ref.wait_for_timeout(200)
                 for key in keys:

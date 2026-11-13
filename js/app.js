@@ -25,3 +25,5 @@ export const app = new Proxy(impl, {
 export function provide(functions) { Object.assign(impl, functions); }
 export function is_ported(name) { return name in impl; }
 export function missing_calls() { return [...missing]; }
+// call an implementation only if some module has provided it (no "not ported" flash)
+export function optional(name, ...args) { return name in impl ? impl[name](...args) : undefined; }

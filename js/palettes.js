@@ -25,3 +25,5 @@ export function palette_load_preset(index) {
 	palettes[index].colors.forEach((c, i) => { current_palette[i] = c.slice(); });
 	// TODO(port): cfg_save()
 }
+
+export function set_current_palette_index(n) { current_palette_index = n; }

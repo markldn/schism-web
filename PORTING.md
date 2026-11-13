@@ -3,7 +3,7 @@
 Hand port of Schism Tracker (C) to plain JavaScript, one C file at a time.
 Tracks upstream commit `1266154c` (version 20261111).
 
-Lines of C in scope: 86287. Fully ported or replaced: 7982. Partially ported files: 11985 lines (including csndfile.c, tables.c, effects.c, filters.c, mixutil.c, sndmix.c, mixer.c and equalizer.c; this is file scope, not completed code). Everything else is still to do.
+Lines of C in scope: 86287. See PROGRESS.md for the current overview; the table below gives per-file status.
 
 ## Rules
 
@@ -37,18 +37,18 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | C file | lines | status | notes |
 |---|---:|---|---|
 | schism/atomic.c | 508 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
-| schism/audio_loadsave.c | 1172 | todo |  |
-| schism/audio_playback.c | 2154 | todo |  |
+| schism/audio_loadsave.c | 1172 | partial | js/song.js, js/page_loadmodule.js: load/save/export, sample+instrument load/save |
+| schism/audio_playback.c | 2154 | partial | js/song.js: transport, keyjazz, mute/solo, AudioWorklet output; no MIDI/OPL |
 | schism/charset.c | 1800 | todo |  |
 | schism/charset_stdlib.c | 505 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/charset_unicode.c | 77 | todo |  |
 | schism/clippy.c | 251 | todo |  |
 | schism/config-parser.c | 533 | todo |  |
-| schism/config.c | 553 | todo |  |
+| schism/config.c | 553 | replaced | js/page_config.js: localStorage |
 | schism/cpu.c | 170 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/dialog.c | 551 | ported | js/dialog.js |
 | schism/disko.c | 1187 | todo |  |
-| schism/dmoz.c | 2409 | todo |  |
+| schism/dmoz.c | 2409 | replaced | js/dmoz.js: IndexedDB virtual disk, import/download |
 | schism/events.c | 214 | replaced | DOM events in js/main.js + js/keyboard.js |
 | schism/fakemem.c | 139 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/fonts.c | 252 | partial | font reset in js/vgamem.js; loading .itf files from disk not ported |
@@ -62,35 +62,35 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | schism/menu.c | 537 | ported | js/menu.js |
 | schism/midi-core.c | 1227 | todo |  |
 | schism/midi-ip.c | 438 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
-| schism/mplink.c | 846 | todo |  |
+| schism/mplink.c | 846 | ported | js/song.js |
 | schism/mt.c | 331 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
-| schism/page.c | 1870 | partial | js/page.js: frame, set_page, global keys, new-song/exit/time-jump/length dialogs, minipop sliders. Missing: _handle_ime, visualiser, clock, live top-info values |
-| schism/page_about.c | 212 | todo |  |
+| schism/page.c | 1870 | ported | js/page.js (no IME / visualiser FFT) |
+| schism/page_about.c | 212 | ported | js/page_misc.js |
 | schism/page_blank.c | 55 | todo |  |
-| schism/page_config.c | 424 | todo |  |
-| schism/page_help.c | 310 | todo |  |
-| schism/page_info.c | 1354 | todo |  |
-| schism/page_instruments.c | 3124 | todo |  |
-| schism/page_loadinst.c | 550 | todo |  |
-| schism/page_loadmodule.c | 1202 | todo |  |
-| schism/page_loadsample.c | 1068 | todo |  |
-| schism/page_log.c | 349 | todo |  |
-| schism/page_message.c | 893 | todo |  |
+| schism/page_config.c | 424 | ported | js/page_config.js |
+| schism/page_help.c | 310 | ported | js/page_misc.js |
+| schism/page_info.c | 1354 | ported | js/page_info.js (layout not saved) |
+| schism/page_instruments.c | 3124 | ported | js/page_instruments.js |
+| schism/page_loadinst.c | 550 | ported | js/page_loadsample.js |
+| schism/page_loadmodule.c | 1202 | ported | js/page_loadmodule.js |
+| schism/page_loadsample.c | 1068 | partial | js/page_loadsample.js: preview widgets read-only |
+| schism/page_log.c | 349 | ported | js/page_misc.js |
+| schism/page_message.c | 893 | ported | js/page_message.js (no drag selection) |
 | schism/page_midi.c | 378 | todo |  |
 | schism/page_midiout.c | 179 | todo |  |
-| schism/page_orderpan.c | 1068 | todo |  |
-| schism/page_palette.c | 312 | todo |  |
-| schism/page_patedit.c | 4790 | todo |  |
-| schism/page_preferences.c | 396 | todo |  |
-| schism/page_samples.c | 2100 | todo |  |
-| schism/page_timeinfo.c | 232 | todo |  |
-| schism/page_vars.c | 243 | todo |  |
+| schism/page_orderpan.c | 1068 | ported | js/page_orderpan.js |
+| schism/page_palette.c | 312 | ported | js/page_palette.js |
+| schism/page_patedit.c | 4790 | ported | js/page_patedit.js (no MIDI record, no pattern-to-sample) |
+| schism/page_preferences.c | 396 | ported | js/page_config.js (one Web Audio device) |
+| schism/page_samples.c | 2100 | ported | js/page_samples.js (no AdLib dialogs, no text synth) |
+| schism/page_timeinfo.c | 232 | ported | js/page_timeinfo.js |
+| schism/page_vars.c | 243 | ported | js/page_vars.js |
 | schism/page_waterfall.c | 577 | todo |  |
 | schism/palettes.c | 462 | partial | js/palettes.js; config load/save not ported |
-| schism/pattern-view.c | 974 | todo |  |
-| schism/sample-edit.c | 613 | todo |  |
+| schism/pattern-view.c | 974 | ported | js/pattern-view.js |
+| schism/sample-edit.c | 613 | ported | js/sample-edit.js |
 | schism/slurp.c | 1378 | partial | js/slurp.js memory read/seek/getc subset; sample decoder integration tests pass. Remaining APIs pending. |
-| schism/status.c | 200 | partial | flash text only; playing-status lines need the player |
+| schism/status.c | 200 | ported | js/page.js |
 | schism/str.c | 586 | todo |  |
 | schism/timer.c | 317 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/tree.c | 221 | todo |  |
@@ -122,20 +122,20 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | fmt/avformat.c | 689 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | fmt/brr.c | 238 | todo |  |
 | fmt/bzip2.c | 199 | todo |  |
-| fmt/compression.c | 779 | todo |  |
+| fmt/compression.c | 779 | partial | IT 2.14/2.15 decompression in js/fmt/loaders.js; MDL/DMF not ported |
 | fmt/d00.c | 939 | todo |  |
 | fmt/dsm.c | 444 | todo |  |
 | fmt/edl.c | 91 | todo |  |
 | fmt/f2r.c | 49 | todo |  |
 | fmt/far.c | 292 | todo |  |
 | fmt/flac.c | 918 | todo |  |
-| fmt/generic.c | 589 | todo |  |
+| fmt/generic.c | 589 | partial | js/fmt/loaders.js |
 | fmt/gstreamer.c | 647 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | fmt/iff.c | 371 | todo |  |
 | fmt/imf.c | 744 | todo |  |
-| fmt/it.c | 1114 | todo |  |
-| fmt/iti.c | 647 | todo |  |
-| fmt/its.c | 363 | todo |  |
+| fmt/it.c | 1114 | ported | js/fmt/loaders.js + savers.js |
+| fmt/iti.c | 647 | ported | js/fmt/loaders.js + savers.js |
+| fmt/its.c | 363 | ported | js/fmt/loaders.js + savers.js |
 | fmt/liq.c | 58 | todo |  |
 | fmt/macosxca.c | 315 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | fmt/mdl.c | 1191 | todo |  |
@@ -143,7 +143,7 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | fmt/mf.c | 56 | todo |  |
 | fmt/mid.c | 539 | todo |  |
 | fmt/mmcmp.c | 374 | todo |  |
-| fmt/mod.c | 808 | todo |  |
+| fmt/mod.c | 808 | ported | js/fmt/loaders.js + savers.js |
 | fmt/mp3.c | 98 | todo |  |
 | fmt/mt2.c | 55 | todo |  |
 | fmt/mtm.c | 278 | todo |  |
@@ -153,9 +153,9 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | fmt/okt.c | 509 | todo |  |
 | fmt/pat.c | 304 | todo |  |
 | fmt/psm.c | 1421 | todo |  |
-| fmt/raw.c | 64 | todo |  |
-| fmt/s3i.c | 274 | todo |  |
-| fmt/s3m.c | 1217 | todo |  |
+| fmt/raw.c | 64 | ported | js/fmt/info.js + savers.js |
+| fmt/s3i.c | 274 | partial | header writer in savers.js |
+| fmt/s3m.c | 1217 | ported | js/fmt/loaders.js + savers.js |
 | fmt/sbi.c | 106 | todo |  |
 | fmt/sf2.c | 356 | todo |  |
 | fmt/sfx.c | 285 | todo |  |
@@ -163,10 +163,10 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | fmt/stx.c | 337 | todo |  |
 | fmt/ult.c | 431 | todo |  |
 | fmt/w64.c | 246 | todo |  |
-| fmt/wav.c | 526 | todo |  |
+| fmt/wav.c | 526 | ported | js/fmt/info.js + savers.js |
 | fmt/win32mf.c | 1153 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
-| fmt/xi.c | 572 | todo |  |
-| fmt/xm.c | 959 | todo |  |
+| fmt/xi.c | 572 | partial | loader in js/fmt/info.js |
+| fmt/xm.c | 959 | ported | loader in js/fmt/loaders.js |
 | fmt/xz.c | 193 | todo |  |
 | fmt/zlib.c | 205 | todo |  |
 | fmt/zstd.c | 230 | todo |  |

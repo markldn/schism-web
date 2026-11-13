@@ -76,3 +76,6 @@ export const status = {
 };
 
 export function need_update() { status.flags |= NEED_UPDATE; }
+
+// globals that several C files share (page.c, page_patedit.c, ...)
+export const tracker = { playback_tracing: 0, midi_playback_tracing: 0 };

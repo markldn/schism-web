@@ -90,54 +90,79 @@ export function mix_loop_state_init(mls, chan) {
 // Spline/FIR kernels will use the upstream lookup tables in a later block.
 export function mix_kernel(channel, buffer, start, frames, mode = 0, ramp = false, filter = false) {
 	if (mode < 0 || mode > 3) throw new RangeError('Invalid interpolation mode');
-	const bits = channel.flags & 1 ? 16 : 8, channels = channel.flags & 64 ? 2 : 1;
+	const bits = channel.flags & 1 ? 16 : 8, stereo = channel.flags & 64 ? 1 : 0, channels = stereo + 1;
 	const pointer = channel.current_sample_data;
 	const data = pointer.data || pointer, offset = pointer.byteOffset || 0;
-	const view = new DataView(data.buffer);
-	const sample = index => {
-		const byte = data.byteOffset + offset + index * (bits / 8);
-		if (byte < 0 || byte + bits / 8 > view.byteLength) throw new RangeError('Sample padding required for interpolation');
-		return bits === 16 ? view.getInt16(byte, true) : view.getInt8(byte);
-	};
-	let position = channel.position.v, maximum = channel.vu_meter >>> 0;
+	// Typed view over the whole padded allocation so negative indexes reach the
+	// pre-padding exactly like the C pointer arithmetic does.
+	const mem = bits === 16 ? (data._i16 || (data._i16 = new Int16Array(data.buffer)))
+		: (data._i8 || (data._i8 = new Int8Array(data.buffer)));
+	const base = (data.byteOffset + offset) / (bits >> 3);
+	const shift8 = 16 - bits, lshift = bits - 8, tapshift = bits === 8 ? 6 : 14;
+	const pv = channel.position.v, iv = channel.increment.v;
+	let hi = Number(pv >> 32n), lo = Number(pv & 0xffffffffn);
+	const ihi = Number(iv >> 32n), ilo = Number(iv & 0xffffffffn);
+	let maximum = channel.vu_meter >>> 0;
 	let leftRamp = channel.left_ramp_volume | 0, rightRamp = channel.right_ramp_volume | 0;
-	const filtered = (value, c) => {
-		const y = channel.filter_y[c], clip = n => Math.max(-65536, Math.min(65534, n));
-		const result = Number(BigInt.asIntN(32, (BigInt(value) * BigInt(channel.filter_a0) + BigInt(clip(y[0])) * BigInt(channel.filter_b0) + BigInt(clip(y[1])) * BigInt(channel.filter_b1) + 8388608n) >> 24n));
-		y[1] = y[0]; y[0] = result; return result;
-	};
-	for (let frame = 0; frame < frames; frame++) {
-		const hi = Number(position >> 32n), lo = Number((position & 0xffffffffn) >> 24n);
-		const read = c => {
-			const first = sample(hi * channels + c);
-			if (mode === 0) return first << (16 - bits);
-			if (mode === 1) return (first << (16 - bits)) + (Math.imul(lo, sample((hi + 1) * channels + c) - first) >> (bits - 8));
-			if (mode === 2) {
-				const index = Number((position >> 20n) & 4092n);
-				let sum = 0;
-				for (let tap = 0; tap < 4; tap++) sum = (sum + Math.imul(cubic_spline_lut[index + tap], sample((hi + tap - 1) * channels + c))) | 0;
-				return sum >> (bits === 8 ? 6 : 14);
+	const lr = channel.left_ramp | 0, rr = channel.right_ramp | 0;
+	const lvol = channel.left_volume | 0, rvol = channel.right_volume | 0;
+	const a0 = channel.filter_a0, b0 = channel.filter_b0, b1 = channel.filter_b1;
+	let fy = null, f00 = 0, f01 = 0, f10 = 0, f11 = 0;
+	if (filter) { fy = channel.filter_y; f00 = fy[0][0]; f01 = fy[0][1]; f10 = fy[1][0]; f11 = fy[1][1]; }
+	const spline = cubic_spline_lut, fir = windowed_fir_lut;
+	let l = 0, r = 0, p = 0, idx = 0, s0 = 0, sum = 0, h1 = 0, h2 = 0;
+	for (let frame = 0, out = start; frame < frames; frame++, out += 2) {
+		for (let c = 0; c <= stereo; c++) {
+			p = base + hi * channels + c;
+			if (mode === 0) s0 = mem[p] << shift8;
+			else if (mode === 1) { s0 = mem[p]; s0 = (s0 << shift8) + (Math.imul(lo >>> 24, mem[p + channels] - s0) >> lshift); }
+			else if (mode === 2) {
+				idx = (lo >>> 20) & 4092; p -= channels;
+				sum = Math.imul(spline[idx], mem[p]);
+				sum = (sum + Math.imul(spline[idx + 1], mem[p + channels])) | 0;
+				sum = (sum + Math.imul(spline[idx + 2], mem[p + 2 * channels])) | 0;
+				sum = (sum + Math.imul(spline[idx + 3], mem[p + 3 * channels])) | 0;
+				s0 = sum >> tapshift;
+			} else {
+				idx = (((lo >>> 16) + 8) >> 2) & 32760; p -= 3 * channels;
+				h1 = Math.imul(fir[idx], mem[p]);
+				h1 = (h1 + Math.imul(fir[idx + 1], mem[p + channels])) | 0;
+				h1 = (h1 + Math.imul(fir[idx + 2], mem[p + 2 * channels])) | 0;
+				h1 = (h1 + Math.imul(fir[idx + 3], mem[p + 3 * channels])) | 0;
+				h2 = Math.imul(fir[idx + 4], mem[p + 4 * channels]);
+				h2 = (h2 + Math.imul(fir[idx + 5], mem[p + 5 * channels])) | 0;
+				h2 = (h2 + Math.imul(fir[idx + 6], mem[p + 6 * channels])) | 0;
+				h2 = (h2 + Math.imul(fir[idx + 7], mem[p + 7 * channels])) | 0;
+				s0 = (((h1 >> 1) + (h2 >> 1)) | 0) >> tapshift;
 			}
-			const index = ((Number((position & 0xffffffffn) >> 16n) + 8) >> 2) & 32760;
-			let firstHalf = 0, secondHalf = 0;
-			for (let tap = 0; tap < 4; tap++) {
-				firstHalf = (firstHalf + Math.imul(windowed_fir_lut[index + tap], sample((hi + tap - 3) * channels + c))) | 0;
-				secondHalf = (secondHalf + Math.imul(windowed_fir_lut[index + tap + 4], sample((hi + tap + 1) * channels + c))) | 0;
-			}
-			return (((firstHalf >> 1) + (secondHalf >> 1)) | 0) >> (bits === 8 ? 6 : 14);
-		};
-		let l = read(0), r = channels === 2 ? read(1) : l;
-		if (filter) { l = filtered(l, 0); r = channels === 2 ? filtered(r, 1) : l; }
-		if (ramp) { leftRamp = (leftRamp + channel.left_ramp) | 0; rightRamp = (rightRamp + channel.right_ramp) | 0; }
-		const lx = Math.imul(l, ramp ? rightRamp >> 12 : channel.right_volume);
-		const rx = Math.imul(r, ramp ? leftRamp >> 12 : channel.left_volume);
-		const index = start + frame * 2;
-		buffer[index] = (buffer[index] + lx) | 0; buffer[index + 1] = (buffer[index + 1] + rx) | 0;
-		const average = Math.floor((Math.abs(lx) + Math.abs(rx)) / 2);
-		maximum = Math.max(maximum, average);
-		position = wrap(position + channel.increment.v);
+			if (c) r = s0; else l = s0;
+		}
+		if (!stereo) r = l;
+		if (filter) {
+			let y0 = f00 < -65536 ? -65536 : f00 > 65534 ? 65534 : f00;
+			let y1 = f01 < -65536 ? -65536 : f01 > 65534 ? 65534 : f01;
+			let res = Math.floor((l * a0 + y0 * b0 + y1 * b1 + 8388608) / 16777216) | 0;
+			f01 = f00; f00 = res; l = res;
+			if (stereo) {
+				y0 = f10 < -65536 ? -65536 : f10 > 65534 ? 65534 : f10;
+				y1 = f11 < -65536 ? -65536 : f11 > 65534 ? 65534 : f11;
+				res = Math.floor((r * a0 + y0 * b0 + y1 * b1 + 8388608) / 16777216) | 0;
+				f11 = f10; f10 = res; r = res;
+			} else r = l;
+		}
+		let lx, rx;
+		if (ramp) {
+			leftRamp = (leftRamp + lr) | 0; rightRamp = (rightRamp + rr) | 0;
+			lx = Math.imul(l, rightRamp >> 12); rx = Math.imul(r, leftRamp >> 12);
+		} else { lx = Math.imul(l, rvol); rx = Math.imul(r, lvol); }
+		buffer[out] = (buffer[out] + lx) | 0; buffer[out + 1] = (buffer[out + 1] + rx) | 0;
+		const average = Math.floor(((lx < 0 ? -lx : lx) + (rx < 0 ? -rx : rx)) / 2);
+		if (average > maximum) maximum = average;
+		lo += ilo; hi += ihi;
+		if (lo >= 4294967296) { lo -= 4294967296; hi++; }
 	}
-	channel.vu_meter = maximum; channel.position = { v: position };
+	if (filter) { fy[0][0] = f00; fy[0][1] = f01; fy[1][0] = f10; fy[1][1] = f11; }
+	channel.vu_meter = maximum; channel.position = { v: (BigInt(hi) << 32n) | BigInt(lo) };
 	if (ramp) {
 		channel.left_ramp_volume = leftRamp; channel.right_ramp_volume = rightRamp;
 		channel.left_volume = leftRamp >> 12; channel.right_volume = rightRamp >> 12;
@@ -210,8 +235,12 @@ export function fake_vu_meter(channel, smpcount, len) {
 	const stereo = !!(channel.flags & 64), stride = stereo ? 2 : 1;
 	const mins = [bits === 16 ? 32767 : 127, bits === 16 ? 32767 : 127];
 	const maxs = [bits === 16 ? -32768 : -128, bits === 16 ? -32768 : -128];
+	// the C reads freely past the sample end here; clamp to the allocation instead
+	const lo = Math.max(0, offset), hi = Math.min(view.byteLength - bytes, offset + (count - 1) * bytes);
 	for (let i = 0; i < count; i++) {
-		const value = bits === 16 ? view.getInt16(offset + i * bytes, true) : view.getInt8(offset + i);
+		const at = offset + i * bytes;
+		if (at < lo || at > hi) continue;
+		const value = bits === 16 ? view.getInt16(at, true) : view.getInt8(at);
 		const c = i % stride; mins[c] = Math.min(mins[c], value); maxs[c] = Math.max(maxs[c], value);
 	}
 	// Preserve upstream's documented approximate stereo meter and its use of
