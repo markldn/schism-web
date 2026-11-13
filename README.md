@@ -1,4 +1,4 @@
-# schism-html
+# schism-web
 
 Schism Tracker (an Impulse Tracker clone) rewritten in plain JavaScript: ES
 modules, a canvas and Web Audio. No WebAssembly and no build step.
