@@ -5,6 +5,29 @@ Tracks upstream commit `1266154c` (version 20261111).
 
 Lines of C in scope: 86287. See PROGRESS.md for the current overview; the table below gives per-file status.
 
+## Verification against the C build
+
+`test/cref.mjs` renders modules with a native build of the same Schism source
+(`schismtracker --headless --diskwrite`) and with the JS player, and compares
+the PCM sample by sample. Build the reference once (needs only SDL2 headers;
+the SDL library is loaded at run time):
+
+    cp -r ../schismtracker /tmp/st && cd /tmp/st && autoreconf -i
+    mkdir build && cd build && ../configure --without-flac --without-jack --without-alsa \
+        --without-gstreamer --without-avformat --without-sdl12 --without-sdl3 --enable-sdl2-linking \
+        SDL2_CFLAGS="-I/path/to/SDL2/include" SDL2_LIBS=-lSDL2 \
+        UTF8PROC_CFLAGS=-I/path/to/utf8proc UTF8PROC_LIBS=/path/to/libutf8proc.a && make
+    CREF_BIN=/tmp/st/build/schismtracker node test/cref.mjs --secs 60 file.it ...
+
+C seeds rand() from the clock, so songs with random volume/pan swing or random
+waveforms differ run to run; `CREF_RAND=1073741823 CREF_RAND_SO=fixrand.so`
+pins rand() on both sides (fixrand.so: `int rand(void){return 1073741823;}`
+built as a shared object for LD_PRELOAD).
+
+As of 2026-11-14, 74 modules (IT, XM, S3M with and without AdLib, MOD, 669,
+MTM, STM, FAR, ULT, OKT, IMF, SFX, DSM, MDL, PSM, D00) render identically to the
+C build over 60 s, apart from at most a few samples off by one LSB in some files.
+
 ## Rules
 
 - Port, don't redesign: keep C function names, coordinates, colours and control flow so each JS file can be read next to its C file.
@@ -38,7 +61,7 @@ Song-length calculation now uses copied inline playback state and the tick engin
 |---|---:|---|---|
 | schism/atomic.c | 508 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/audio_loadsave.c | 1172 | partial | js/song.js, js/page_loadmodule.js: load/save/export, sample+instrument load/save |
-| schism/audio_playback.c | 2154 | partial | js/song.js: transport, keyjazz, mute/solo, AudioWorklet output; no MIDI/OPL |
+| schism/audio_playback.c | 2154 | ported | js/song.js: transport, keyjazz, mute/solo, AudioWorklet output, MIDI/OPL hooks |
 | schism/charset.c | 1800 | todo |  |
 | schism/charset_stdlib.c | 505 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/charset_unicode.c | 77 | todo |  |
@@ -47,7 +70,7 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | schism/config.c | 553 | replaced | js/page_config.js: localStorage |
 | schism/cpu.c | 170 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/dialog.c | 551 | ported | js/dialog.js |
-| schism/disko.c | 1187 | todo |  |
+| schism/disko.c | 1187 | replaced | js/fmt/savers.js: WAV/AIFF and per-channel browser export |
 | schism/dmoz.c | 2409 | replaced | js/dmoz.js: IndexedDB virtual disk, import/download |
 | schism/events.c | 214 | replaced | DOM events in js/main.js + js/keyboard.js |
 | schism/fakemem.c | 139 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
@@ -60,11 +83,11 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | schism/main.c | 1444 | replaced | js/main.js (event loop) |
 | schism/mem.c | 65 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/menu.c | 537 | ported | js/menu.js |
-| schism/midi-core.c | 1227 | todo |  |
+| schism/midi-core.c | 1227 | ported | js/midi.js: Web MIDI provider (ports = browser MIDI devices), send with audio-latency timestamps, input -> key events; no IP MIDI |
 | schism/midi-ip.c | 438 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/mplink.c | 846 | ported | js/song.js |
 | schism/mt.c | 331 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
-| schism/page.c | 1870 | ported | js/page.js (no IME / visualiser FFT) |
+| schism/page.c | 1870 | ported | js/page.js; spectrum via js/page_waterfall.js; no IME |
 | schism/page_about.c | 212 | ported | js/page_misc.js |
 | schism/page_blank.c | 55 | todo |  |
 | schism/page_config.c | 424 | ported | js/page_config.js |
@@ -76,16 +99,16 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | schism/page_loadsample.c | 1068 | partial | js/page_loadsample.js: preview widgets read-only |
 | schism/page_log.c | 349 | ported | js/page_misc.js |
 | schism/page_message.c | 893 | ported | js/page_message.js (no drag selection) |
-| schism/page_midi.c | 378 | todo |  |
-| schism/page_midiout.c | 179 | todo |  |
+| schism/page_midi.c | 378 | ported | js/page_midi.js |
+| schism/page_midiout.c | 179 | ported | js/page_midi.js |
 | schism/page_orderpan.c | 1068 | ported | js/page_orderpan.js |
 | schism/page_palette.c | 312 | ported | js/page_palette.js |
-| schism/page_patedit.c | 4790 | ported | js/page_patedit.js (no MIDI record, no pattern-to-sample) |
+| schism/page_patedit.c | 4790 | ported | js/page_patedit.js (MIDI recording; no pattern-to-sample) |
 | schism/page_preferences.c | 396 | ported | js/page_config.js (one Web Audio device) |
 | schism/page_samples.c | 2100 | ported | js/page_samples.js (no AdLib dialogs, no text synth) |
 | schism/page_timeinfo.c | 232 | ported | js/page_timeinfo.js |
 | schism/page_vars.c | 243 | ported | js/page_vars.js |
-| schism/page_waterfall.c | 577 | todo |  |
+| schism/page_waterfall.c | 577 | ported | js/page_waterfall.js: waterfall and FFT spectrum |
 | schism/palettes.c | 462 | partial | js/palettes.js; config load/save not ported |
 | schism/pattern-view.c | 974 | ported | js/pattern-view.js |
 | schism/sample-edit.c | 613 | ported | js/sample-edit.js |
@@ -102,67 +125,67 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | schism/widget-keyhandler.c | 1055 | ported | js/widget.js |
 | schism/widget.c | 745 | ported | js/widget.js; typed text limited to ASCII until charset.c lands |
 | schism/xpmdata.c | 317 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
-| player/csndfile.c | 2142 | partial | js/csndfile.js: pattern allocation/emptiness, order/pattern counts, instrument initialization. Core song/sample/channel allocation, sample emptiness/count/free-slot helpers and highest-used-channel scan added. Instrument emptiness/count/free-slot helpers and playmark reset implemented. Generated voice layout, voice allocation, csf_set_current_order and csf_loop_pattern added; targeted positioning checks pass. csf_stop_sample/csf_destroy_sample added; node test/song-model.mjs checks active-reference cleanup and metadata preservation. Restart-position insertion and float32 VU aggregation added with model checks. Live sample-update propagation added with sustain/normal-loop, data-shortening and flag tests. Sample loop sanitization/padding/lookahead added with endpoint/loop tests. 7/8/16-bit PCM decode and 24/32-bit normalized PCM plus 32/64-bit IEEE input added; targeted split-delta/endian/truncation/IEEE-clipping tests pass. S3M/IT effect import/export translation added with generated mapping and surround/break/volume tests. Broad input/effect parity pending. Not wired into UI; full reset, playback and audio verification pending. |
-| player/effects.c | 2453 | partial | js/effects.js: pitch conversions and frequency slide helper; 10,844 note/frequency and slide cases match compiled C via test/pitch-parity.py; transpose helpers have targeted checks only. Portamento up/down, tone portamento and IMF note-slide handlers added with targeted test/effects.mjs checks. Volume/panning slides and normal/fine vibrato parameter setup added with tick/memory/clamping checks. Tremolo/panbrello waveforms added with injected-random tests; default random sequence differs from libc. Channel/global-volume slides and pattern-loop countdown added with targeted tests. All four volume/panning slide handlers pass 10,240 compiled-C state comparisons in test/slide-parity.py. Instrument/sample panning and generated quirk indices/defaults added with precedence/surround tests. Note-cut/key-off handlers added with sustain-release/position/fade tests; MIDI/OPL hooks still unported. Retrigger handler added with countdown/volume/quirk checks; note-change/NNA providers pending. fx_special ported with targeted delay/pan/reverse/offset/envelope/background/macro tests. Row handle_effect dispatch implemented (MIDI provider pending), with generated FX constants and speed/tempo/jump tests. Volume-column dispatcher added with delayed-start/memory/porta/vibrato-speed tests. Ordered cross-column portamento memory initialization added with precedence/Compat Gxx tests. Per-channel scheduler/dispatch and pattern-break pass implemented; length-mode/SD2/loop tests pass. csf_process_note_start block implemented with remembered-note ordering/pan tests; envelope-reset/keyboard-sample helpers implemented with carry/Compat Gxx/fallback tests; instrument-change provider implemented with sample-binding/sustain-loop tests; note-change implemented with pitch/sustain/porta tests; NNA allocator/voice-copy helpers implemented with mute/quietest/history tests; duplicate/new-note actions implemented with sample-mode transfer tests; MIDI and broader instrument/NNA differential checks remain pending; audio parity pending. |
-| player/equalizer.c | 280 | partial | js/equalizer.js: EQ setup/filtering and normalization; targeted test/equalizer.mjs passes. C coefficient/signal comparisons and UI wiring pending. |
-| player/filters.c | 128 | partial | js/filters.js and extracted resonance LUT; 21,544 coefficient/state cases match compiled C via test/filter-parity.py; mixer integration and audio parity pending. |
-| player/fmopl2.c | 2091 | todo |  |
-| player/fmopl3.c | 2552 | todo |  |
-| player/fmpatches.c | 179 | todo |  |
-| player/mixer.c | 882 | partial | js/mixer.js begins chunk scheduling/wrap/reflection; test/mixer.mjs passes. Lookahead routing/state initialization added with address/chunk/post-wrap tests. Nearest/linear mono/stereo 8/16-bit kernels added with scaling/channel/midpoint tests; filter/ramp variants implemented but broader tests pending. Padded samples and stereo mix-loop orchestration implemented; integration renders nonzero PCM. Fake VU added with scaling/peak tests; spline/FIR kernels and extracted LUTs added with constant-signal tests; reverse/stereo/16-bit and 64 kernel variants match compiled upstream macros for nonconstant fractional-step data (samples/position/VU/ramp state). Four FIR resize helpers added with constant-signal 8/16-bit mono/stereo tests. Broader boundaries/resizer comparisons and full audio parity pending. |
-| player/mixutil.c | 197 | partial | js/mixutil.js: buffer/offset/mono/PCM utilities implemented; targeted test/mixutil.mjs checks pass; 1,004 PCM buffers/65,648 samples match C bytes/extrema via test/mixutil-parity.py. Offset-decay differential and full audio parity pending. |
-| player/snd_fm.c | 648 | todo |  |
-| player/snd_gm.c | 706 | todo |  |
-| player/sndmix.c | 1301 | partial | js/sndmix.js: order advancement and tick/row scheduling; test/sndmix.mjs passes. Playback tremor/vibrato/arpeggio helpers added with phase/octave/timing tests. Volume/pan envelope interpolation and fadeout added with targeted checks. Envelope advancement added with sustain-release/loop/end/disabled tests. Sample autovibrato added with sweep/cap/zero-speed checks, preserving 65535 table-zero rounding. Per-voice mixer setup added with pan/surround/gain/list checks; pitch/filter envelope interpolation added with routing/bypass tests; MIDI/OPL key routing and generated volume thresholds added with recorded-transport tests; csf_read_note per-tick voice setup implemented; integrated gain/increment/tick/mix-list checks pass. csf_read output buffering implemented; integration renders 1,024 16-bit frames across a tick boundary. Providers, other output/export branches, broader C comparisons and audio parity pending. |
-| player/tables.c | 440 | partial | All 14 arrays extracted to js/gen/tables.js; 1,582 values match compiled C via test/player-tables.py. Playback integration/audio parity pending. |
-| fmt/669.c | 345 | todo |  |
-| fmt/aiff.c | 814 | todo |  |
-| fmt/ams.c | 57 | todo |  |
-| fmt/au.c | 247 | todo |  |
+| player/csndfile.c | 2142 | ported | js/csndfile.js; renders bit-exact with the native build (test/cref.mjs) |
+| player/effects.c | 2453 | ported | js/effects.js + js/midimacro.js (Zxx/SFx macros, filters) + js/midi.js (csf_midi_out_note); bit-exact renders |
+| player/equalizer.c | 280 | ported | js/equalizer.js (EQ is off by default, so not covered by the render comparison) |
+| player/filters.c | 128 | ported | js/filters.js; bit-exact renders incl. OpenMPT filter test modules |
+| player/fmopl2.c | 2091 | n/a | the native build is configured for OPL3 (OPLSOURCE 3); fmopl3.js is used instead |
+| player/fmopl3.c | 2552 | ported | js/fmopl3.js (YMF262, the chip the native build uses) |
+| player/fmpatches.c | 179 | ported | js/gen/fmpatches.js: extracted General MIDI AdLib patch bank |
+| player/mixer.c | 882 | ported | js/mixer.js; bit-exact renders (fixed 2026-11-14: sample start was 16 frames late, loop-end chunk count did not wrap like the C uint32) |
+| player/mixutil.c | 197 | ported | js/mixutil.js; bit-exact renders |
+| player/snd_fm.c | 648 | ported | js/snd_fm.js; bit-exact with the native build (test/cref.mjs) |
+| player/snd_gm.c | 706 | ported | js/midi.js |
+| player/sndmix.c | 1301 | ported | js/sndmix.js; bit-exact renders |
+| player/tables.c | 440 | ported | js/gen/tables.js (extracted) |
+| fmt/669.c | 345 | ported | js/fmt/loaders2.js |
+| fmt/aiff.c | 814 | partial | native sample loading in js/fmt/samples.js; sample/song saving in savers.js |
+| fmt/ams.c | 57 | ported | file info only, js/fmt/info.js |
+| fmt/au.c | 247 | ported | js/fmt/samples.js + savers.js |
 | fmt/avformat.c | 689 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
-| fmt/brr.c | 238 | todo |  |
+| fmt/brr.c | 238 | ported | sample loading in js/fmt/samples.js |
 | fmt/bzip2.c | 199 | todo |  |
 | fmt/compression.c | 779 | partial | IT 2.14/2.15 decompression in js/fmt/loaders.js; MDL/DMF not ported |
-| fmt/d00.c | 939 | todo |  |
-| fmt/dsm.c | 444 | todo |  |
+| fmt/d00.c | 939 | ported | js/fmt/loaders2.js (guards the C endless loop on truncated pattern data) |
+| fmt/dsm.c | 444 | ported | js/fmt/loaders2.js |
 | fmt/edl.c | 91 | todo |  |
-| fmt/f2r.c | 49 | todo |  |
-| fmt/far.c | 292 | todo |  |
+| fmt/f2r.c | 49 | ported | file info only, js/fmt/info.js |
+| fmt/far.c | 292 | ported | js/fmt/loaders2.js |
 | fmt/flac.c | 918 | todo |  |
 | fmt/generic.c | 589 | partial | js/fmt/loaders.js |
 | fmt/gstreamer.c | 647 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
-| fmt/iff.c | 371 | todo |  |
-| fmt/imf.c | 744 | todo |  |
+| fmt/iff.c | 371 | partial | chunk reading in js/fmt/loaders2.js |
+| fmt/imf.c | 744 | ported | js/fmt/loaders2.js |
 | fmt/it.c | 1114 | ported | js/fmt/loaders.js + savers.js |
 | fmt/iti.c | 647 | ported | js/fmt/loaders.js + savers.js |
 | fmt/its.c | 363 | ported | js/fmt/loaders.js + savers.js |
-| fmt/liq.c | 58 | todo |  |
+| fmt/liq.c | 58 | ported | file info only, js/fmt/info.js |
 | fmt/macosxca.c | 315 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
-| fmt/mdl.c | 1191 | todo |  |
-| fmt/med.c | 126 | todo |  |
-| fmt/mf.c | 56 | todo |  |
-| fmt/mid.c | 539 | todo |  |
-| fmt/mmcmp.c | 374 | todo |  |
+| fmt/mdl.c | 1191 | ported | js/fmt/loaders2.js (+ MDL sample decompression) |
+| fmt/med.c | 126 | ported | file info only, js/fmt/info.js |
+| fmt/mf.c | 56 | ported | file info only, js/fmt/info.js |
+| fmt/mid.c | 539 | ported | js/fmt/loaders2.js |
+| fmt/mmcmp.c | 374 | ported | js/fmt/mmcmp.js; gzip via the browser DecompressionStream |
 | fmt/mod.c | 808 | ported | js/fmt/loaders.js + savers.js |
 | fmt/mp3.c | 98 | todo |  |
-| fmt/mt2.c | 55 | todo |  |
-| fmt/mtm.c | 278 | todo |  |
-| fmt/mus.c | 389 | todo |  |
-| fmt/ntk.c | 47 | todo |  |
+| fmt/mt2.c | 55 | ported | file info only (as upstream), js/fmt/info.js |
+| fmt/mtm.c | 278 | ported | js/fmt/loaders2.js |
+| fmt/mus.c | 389 | ported | js/fmt/loaders2.js |
+| fmt/ntk.c | 47 | ported | file info only, js/fmt/info.js |
 | fmt/ogg.c | 162 | todo |  |
-| fmt/okt.c | 509 | todo |  |
+| fmt/okt.c | 509 | ported | js/fmt/loaders2.js |
 | fmt/pat.c | 304 | todo |  |
-| fmt/psm.c | 1421 | todo |  |
+| fmt/psm.c | 1421 | ported | js/fmt/loaders2.js (new PSM, Sinaria, PSM16) |
 | fmt/raw.c | 64 | ported | js/fmt/info.js + savers.js |
-| fmt/s3i.c | 274 | partial | header writer in savers.js |
+| fmt/s3i.c | 274 | ported | js/fmt/samples.js + savers.js |
 | fmt/s3m.c | 1217 | ported | js/fmt/loaders.js + savers.js |
-| fmt/sbi.c | 106 | todo |  |
+| fmt/sbi.c | 106 | ported | js/fmt/samples.js + savers.js |
 | fmt/sf2.c | 356 | todo |  |
-| fmt/sfx.c | 285 | todo |  |
-| fmt/stm.c | 296 | todo |  |
-| fmt/stx.c | 337 | todo |  |
-| fmt/ult.c | 431 | todo |  |
-| fmt/w64.c | 246 | todo |  |
+| fmt/sfx.c | 285 | ported | js/fmt/loaders2.js |
+| fmt/stm.c | 296 | ported | js/fmt/loaders2.js |
+| fmt/stx.c | 337 | ported | js/fmt/loaders2.js (no test file found) |
+| fmt/ult.c | 431 | ported | js/fmt/loaders2.js |
+| fmt/w64.c | 246 | ported | sample loading in js/fmt/samples.js |
 | fmt/wav.c | 526 | ported | js/fmt/info.js + savers.js |
 | fmt/win32mf.c | 1153 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | fmt/xi.c | 572 | partial | loader in js/fmt/info.js |

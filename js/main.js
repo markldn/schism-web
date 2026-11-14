@@ -2,6 +2,7 @@
 // (Schism Tracker port, GPL-2.0-or-later.)
 
 import { status, PAGE, NEED_UPDATE, DIALOG_NONE } from "./state.js";
+import { slurp_unpack } from './fmt/mmcmp.js';
 import { vgamem_flip } from "./vgamem.js";
 import { video_init, video_blit } from "./video.js";
 import { palette_apply } from "./palettes.js";
@@ -31,8 +32,9 @@ window.addEventListener("pointerdown", start_audio, { once: true, capture: true 
 
 // Files: drag and drop anywhere loads a module (or a sample/instrument on those pages).
 export async function load_file_object(file) {
-	const data = new Uint8Array(await file.arrayBuffer());
-	optional("store_add_file", file.name, data);
+	const raw = new Uint8Array(await file.arrayBuffer());
+	optional("store_add_file", file.name, raw);
+	const data = (await slurp_unpack(raw)) || raw;
 	if (app.handle_dropped_file && app.handle_dropped_file(file.name, data)) return;
 	if (song_load_data(file.name, data)) set_page(PAGE.PATTERN_EDITOR);
 	else app.status_text_flash("Could not load " + file.name);

@@ -1,6 +1,7 @@
 // Initial data-model portion of player/csndfile.c (GPL-2.0-or-later).
 // Playback, sample decoding and mixer state are still unported.
 import { app, provide } from './app.js';
+import { midi_config_defaults, copy_midi_config } from './midimacro.js';
 import { VOICE_SCALARS } from './gen/voice.js';
 import { QUIRK, FX, S3M_EFFECTS } from './gen/tables.js';
 
@@ -79,7 +80,7 @@ export function csf_allocate() {
 		mix_stat: 0, buffer_count: 0, tick_count: 0, frame_delay: 0, row_count: 0,
 		current_speed: 0, current_tempo: 0, break_row: 0, repeat_count: 0, last_global_volume: 0,
 		process_row: 0, row: 0, current_pattern: 0, current_order: 0, process_order: 0,
-		mixing_volume: 0x30, message: '', title: '', tracker_id: '',
+		mixing_volume: 0x30, message: '', title: '', tracker_id: '', midi_config: copy_midi_config(midi_config_defaults),
 		ramping_samples_up: 16, ramping_samples_down: 42, vu_left: 0, vu_right: 0,
 		dry_rofs_vol: 0, dry_lofs_vol: 0, max_voices: 32,
 		row_highlight_major: 16, row_highlight_minor: 4,

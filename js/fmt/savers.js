@@ -41,7 +41,7 @@ export function csf_write_sample(fp, smp, flags) {
 	let o = 0;
 	const put = v => {
 		if (enc === C.SF_PCMU) v ^= bits === 16 ? 0x8000 : 0x80;
-		if (bits === 16) { dv.setUint16(o, v & 0xffff, true); o += 2; } else out[o++] = v & 0xff;
+		if (bits === 16) { dv.setUint16(o, v & 0xffff, !(flags & C.SF_BE)); o += 2; } else out[o++] = v & 0xff;
 	};
 	const delta = [0, 0];
 	const emit = (v, c) => {
@@ -277,20 +277,153 @@ export function wav_bytes(pcm16, channels, rate) {
 	fp.write(new Uint8Array(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength));
 	return fp.bytes();
 }
+const VERSION_STRING = 'Schism Tracker 20261111';
+// iff.c: iff_fill_xtra_chunk / iff_fill_smpl_chunk
+function write_xtra_chunk(fp, smp) {
+	fp.str('xtra', 4); fp.u32(16);
+	fp.u32(smp.flags & C.CHN_PANNING ? 0x20 : 0);
+	fp.u16(smp.panning); fp.u16(smp.volume); fp.u16(smp.global_volume); fp.u16(0);
+	fp.u8(smp.vib_type); fp.u8(smp.vib_speed); fp.u8(smp.vib_depth); fp.u8(smp.vib_rate);
+}
+function write_smpl_chunk(fp, smp) {
+	const loop = !!(smp.flags & C.CHN_LOOP), sus = !!(smp.flags & C.CHN_SUSTAINLOOP);
+	const nloops = sus ? 2 : loop ? 1 : 0;
+	fp.str('smpl', 4); fp.u32(36 + 24 * nloops);
+	fp.u32(0); fp.u32(0); fp.u32(smp.c5speed ? Math.trunc(1e9 / smp.c5speed) : 0); fp.u32(72); fp.u32(0); fp.u32(0); fp.u32(0);
+	fp.u32(nloops); fp.u32(0);
+	const lp = (start, end, bidi) => { fp.str('FLCL', 4); fp.u32(bidi ? 1 : 0); fp.u32(start); fp.u32((end - 1) >>> 0); fp.u32(0); fp.u32(0); };
+	if (sus) lp(smp.sustain_start, smp.sustain_end, smp.flags & C.CHN_PINGPONGSUSTAIN);
+	if (loop) lp(smp.loop_start, smp.loop_end, smp.flags & C.CHN_PINGPONGLOOP);
+	else if (sus) lp(0, 0, 0);
+}
+function write_wav_list(fp, title) {
+	const start = fp.tell();
+	fp.str('LIST', 4); fp.u32(0); fp.str('INFO', 4);
+	const info = (id, text) => {
+		fp.str(id, 4); fp.u32(text.length + (text.length & 1)); fp.str(text, text.length);
+		if (text.length & 1) fp.u8(0x20);
+	};
+	info('ISFT', VERSION_STRING);
+	if (title) info('INAM', title);
+	const end = fp.tell();
+	fp.seek(start + 4); fp.u32(end - start - 8); fp.seek(end);
+}
+function wav_header(fp, bits, channels, rate, length) {
+	const bpf = ((bits + 7) >> 3) * channels;
+	fp.write([0x52, 0x49, 0x46, 0x46, 0xff, 0xff, 0xff, 0xff]); fp.str('WAVEfmt ', 8);
+	fp.u32(16); fp.u16(1); fp.u16(channels); fp.u32(rate); fp.u32(bpf * rate); fp.u16(bpf); fp.u16(bits);
+	fp.str('data', 4); fp.u32(bpf * length);
+	return bpf;
+}
+// wav.c
 export function fmt_wav_save_sample(smp) {
+	if (smp.flags & C.CHN_ADLIB) return null;
 	const fp = new Disko();
 	const ch = smp.flags & C.CHN_STEREO ? 2 : 1, bits = smp.flags & C.CHN_16BIT ? 16 : 8;
-	const n = smp.length * ch, bytes = n * (bits >> 3);
-	fp.str('RIFF', 4); fp.u32(36 + bytes + (smp.flags & C.CHN_LOOP ? 68 : 0)); fp.str('WAVE', 4);
-	fp.str('fmt ', 4); fp.u32(16); fp.u16(1); fp.u16(ch); fp.u32(smp.c5speed); fp.u32(smp.c5speed * ch * (bits >> 3)); fp.u16(ch * (bits >> 3)); fp.u16(bits);
-	fp.str('data', 4); fp.u32(bytes);
-	if (smp.data) csf_write_sample(fp, smp, (bits === 16 ? C.SF_16 | C.SF_PCMS : C.SF_8 | C.SF_PCMU) | C.SF_LE | (ch === 2 ? C.SF_SI : C.SF_M));
-	if (smp.flags & C.CHN_LOOP) {
-		fp.str('smpl', 4); fp.u32(60);
-		fp.u32(0); fp.u32(0); fp.u32(Math.round(1e9 / smp.c5speed)); fp.u32(60); fp.u32(0); fp.u32(0); fp.u32(0);
-		fp.u32(1); fp.u32(0);
-		fp.u32(0); fp.u32(smp.flags & C.CHN_PINGPONGLOOP ? 1 : 0); fp.u32(smp.loop_start); fp.u32(smp.loop_end - 1); fp.u32(0); fp.u32(0);
+	wav_header(fp, bits, ch, smp.c5speed, smp.length);
+	if (smp.data) csf_write_sample(fp, smp, C.SF_LE | (bits === 16 ? C.SF_16 | C.SF_PCMS : C.SF_8 | C.SF_PCMU) | (ch === 2 ? C.SF_SI : C.SF_M));
+	write_xtra_chunk(fp, smp);
+	write_smpl_chunk(fp, smp);
+	write_wav_list(fp, smp.name);
+	const end = fp.tell(); fp.seek(4); fp.u32(end - 8); fp.seek(end);
+	return fp.bytes();
+}
+// ieee-float.c: float_encode_ieee_80
+function float_encode_ieee_80(num) {
+	const b = new Uint8Array(10);
+	let sign = 0;
+	if (num < 0) { sign = 0x8000; num = -num; }
+	let expon = 0, hi = 0, lo = 0;
+	if (num !== 0) {
+		if (!isFinite(num)) expon = sign | 0x7fff;
+		else {
+			let e = Math.floor(Math.log2(num)) + 1, m = num / Math.pow(2, e);
+			if (m >= 1) { m /= 2; e++; } else if (m < 0.5) { m *= 2; e--; }
+			expon = (e + 16382) | sign;
+			let f = m * 4294967296;
+			hi = Math.floor(f);
+			f = (f - hi) * 4294967296;
+			lo = Math.floor(f);
+		}
 	}
+	b[0] = expon >> 8; b[1] = expon & 0xff;
+	b[2] = hi >>> 24; b[3] = (hi >>> 16) & 0xff; b[4] = (hi >>> 8) & 0xff; b[5] = hi & 0xff;
+	b[6] = lo >>> 24; b[7] = (lo >>> 16) & 0xff; b[8] = (lo >>> 8) & 0xff; b[9] = lo & 0xff;
+	return b;
+}
+// aiff.c: aiff_header (big-endian chunk sizes)
+function aiff_header(fp, bits, channels, rate, name, length, smp) {
+	const be32 = v => fp.write([(v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff]);
+	const be16 = v => fp.write([(v >> 8) & 0xff, v & 0xff]);
+	const bps = (bits + 7) >> 3;
+	fp.write([0x46, 0x4f, 0x52, 0x4d, 0xff, 0xff, 0xff, 0xff]); fp.str('AIFF', 4);
+	if (name) {
+		fp.str('NAME', 4); be32((name.length + 1) & ~1); fp.str(name, name.length);
+		if (name.length & 1) fp.u8(0);
+	}
+	if (smp) {
+		fp.str('MARK', 4); be32(2 + 14 + 14); be16(4);
+		const marker = (id, x) => { be16(id); be32(x >>> 0); fp.u8(0); };
+		marker(1, smp.loop_start); marker(2, smp.loop_end); marker(3, smp.sustain_start); marker(4, smp.sustain_end);
+		fp.str('INST', 4); be32(20);
+		fp.write([60, 0, 0, 127, 1, 127, 0, 0]);
+		const loop = (lf, pf, a, b) => { be16((smp.flags & lf ? 1 : 0) + (smp.flags & pf ? 1 : 0)); be16(a); be16(b); };
+		loop(C.CHN_SUSTAINLOOP, C.CHN_PINGPONGSUSTAIN, 3, 4);
+		loop(C.CHN_LOOP, C.CHN_PINGPONGLOOP, 1, 2);
+	}
+	{
+		const nm = VERSION_STRING;
+		fp.str('APPL', 4); be32(4 + nm.length + 1); fp.str('pdos', 4); fp.u8(nm.length); fp.str(nm, nm.length);
+	}
+	if (smp) { fp.str('APPL', 4); be32(4 + 24); fp.str('Schm', 4); write_xtra_chunk(fp, smp); }
+	fp.str('COMM', 4); be32(18); be16(channels);
+	const comm_frames = fp.tell();
+	be32(length >>> 0); be16(bits); fp.write(float_encode_ieee_80(rate));
+	const bpf = bps * channels;
+	fp.str('SSND', 4);
+	const ssnd_size = fp.tell();
+	be32((length * bpf + 8) >>> 0); be32(0); be32(0);
+	return { bpf, bps, comm_frames, ssnd_size };
+}
+export function fmt_aiff_save_sample(smp) {
+	if (smp.flags & C.CHN_ADLIB) return null;
+	const fp = new Disko();
+	const ch = smp.flags & C.CHN_STEREO ? 2 : 1, bits = smp.flags & C.CHN_16BIT ? 16 : 8;
+	aiff_header(fp, bits, ch, smp.c5speed, smp.name, smp.length, smp);
+	if (smp.data) csf_write_sample(fp, smp, C.SF_BE | C.SF_PCMS | (bits === 16 ? C.SF_16 : C.SF_8) | (ch === 2 ? C.SF_SI : C.SF_M));
+	const end = fp.tell(); fp.seek(4); fp.write([((end - 8) >>> 24) & 0xff, ((end - 8) >>> 16) & 0xff, ((end - 8) >>> 8) & 0xff, (end - 8) & 0xff]); fp.seek(end);
+	return fp.bytes();
+}
+// au.c
+export function fmt_au_save_sample(smp) {
+	if (smp.flags & C.CHN_ADLIB) return null;
+	const fp = new Disko();
+	const be32 = v => fp.write([(v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff]);
+	let ln = smp.length;
+	fp.str('.snd', 4); be32(49);
+	if (smp.flags & C.CHN_16BIT) ln *= 2;
+	if (smp.flags & C.CHN_STEREO) ln *= 2;
+	be32(ln >>> 0); be32(smp.flags & C.CHN_16BIT ? 3 : 2); be32(smp.c5speed); be32(smp.flags & C.CHN_STEREO ? 2 : 1);
+	fp.str(smp.name || '', 25);
+	if (smp.data) csf_write_sample(fp, smp, C.SF_BE | C.SF_PCMS | (smp.flags & C.CHN_16BIT ? C.SF_16 : C.SF_8) | (smp.flags & C.CHN_STEREO ? C.SF_SI : C.SF_M));
+	return fp.bytes();
+}
+// sbi.c
+export function fmt_sbi_save_sample(smp) {
+	if (!(smp.flags & C.CHN_ADLIB)) return null;
+	const fp = new Disko();
+	fp.write([0x53, 0x42, 0x49, 0x1a]);
+	fp.str(smp.name || '', 32);
+	fp.write(smp.adlib_bytes.slice(0, 11));
+	fp.write([0, 0, 0, 0, 0]);
+	return fp.bytes();
+}
+// s3i.c
+export function fmt_s3i_save_sample(smp) {
+	const fp = new Disko();
+	s3i_write_header(fp, smp, 0);
+	if (!(smp.flags & C.CHN_ADLIB) && smp.data)
+		csf_write_sample(fp, smp, C.SF_M | C.SF_LE | (smp.flags & C.CHN_16BIT ? C.SF_16 | C.SF_PCMS : C.SF_8 | C.SF_PCMU));
 	return fp.bytes();
 }
 export function fmt_raw_save_sample(smp) {
@@ -299,34 +432,78 @@ export function fmt_raw_save_sample(smp) {
 	return fp.bytes();
 }
 
-// disko.c: render the whole song (once through) to a 16-bit stereo WAV
-export async function song_export_wav(song, rate = 44100, progress) {
-	const copy = { ...song };
+// disko.c: disko_export_song. Renders the song once through with the
+// diskwriter settings (all voices, no backward jumps), into one stream or one
+// per channel (multi-write); returns [{ channel, pcm (Uint8Array, 16-bit LE) }].
+export async function song_export_render(song, multi, rate = 44100, progress) {
 	const work = csf_allocate();
-	for (const k of Object.keys(copy)) if (!['voices', 'voice_mix', 'mix_buffer'].includes(k)) work[k] = copy[k];
-	app.csf_set_wave_config(work, rate, 16, 2);
-	work.mix_flags |= C.SNDMIX_NOBACKWARDJUMPS | C.SNDMIX_DIRECTTODISK;
-	work.mix_flags &= ~C.SNDMIX_DIRECTTODISK;
+	for (const k of Object.keys(song)) if (!['voices', 'voice_mix', 'mix_buffer'].includes(k)) work[k] = song[k];
+	work.opl = null; work.opl_to_chan = null; work.opl_from_chan = null; // a fresh OPL chip, as GM_Reset/OPL setup do
+	const channels = (work.flags & C.SONG_NOSTEREO) ? 1 : 2;
+	csf_set_current_order(work, 0); /* rather indirect way of resetting playback variables */
+	app.csf_set_wave_config(work, rate, 16, channels);
+	work.midi_out_raw = null;
+	work.mix_flags |= C.SNDMIX_DIRECTTODISK | C.SNDMIX_NOBACKWARDJUMPS;
 	work.repeat_count = -1;
 	work.buffer_count = 0;
 	work.flags &= ~(C.SONG_PAUSED | C.SONG_PATTERNLOOP | C.SONG_ENDREACHED);
 	work.stop_at_order = work.stop_at_row = -1;
-	csf_set_current_order(work, 0);
-	const chunks = [];
-	let total = 0;
-	const buf = new Uint8Array(4096 * 4);
+	work.max_voices = 256;
+	const outs = Array.from({ length: multi ? C.MAX_CHANNELS : 1 }, () => ({ chunks: [], len: 0 }));
+	if (multi) work.multi_write = outs.map(o => ({ buffer: new Int32Array(work.mix_buffer.length), used: 0, data: o,
+		write(d, bytes, n) { d.chunks.push(bytes.slice(0, n)); d.len += n; },
+		silence(d, n) { d.chunks.push(new Uint8Array(n)); d.len += n; } }));
+	const buf = new Uint8Array(4096 * 2 * channels);
+	let total = 0, loops = 0;
 	for (;;) {
 		const n = app.csf_read(work, buf, buf.length);
-		if (!n) break;
-		chunks.push(new Int16Array(buf.buffer.slice(0, n * 4)));
+		if (!multi) { outs[0].chunks.push(buf.slice(0, n * 2 * channels)); outs[0].len += n * 2 * channels; }
 		total += n;
-		if (total > rate * 60 * 30) break; // 30 minute guard
-		if (chunks.length % 64 === 0) { if (progress) progress(total / rate); await new Promise(r => setTimeout(r, 0)); }
+		if (!n || (work.flags & C.SONG_ENDREACHED)) break; // disko_sync
+		if (total > rate * 60 * 60) break; // an hour is enough
+		if (++loops % 64 === 0) { if (progress) progress(total / rate); await new Promise(r => setTimeout(r, 0)); }
 	}
-	const pcm = new Int16Array(total * 2);
-	let o = 0;
-	for (const c of chunks) { pcm.set(c, o); o += c.length; }
-	return wav_bytes(pcm, 2, rate);
+	const result = [];
+	outs.forEach((o, n) => {
+		if (multi && !work.multi_write[n].used) return;
+		const pcm = new Uint8Array(o.len);
+		let off = 0;
+		for (const c of o.chunks) { pcm.set(c, off); off += c.length; }
+		result.push({ channel: n + 1, pcm });
+	});
+	return { channels, rate, title: song.title || '', files: result };
+}
+// wav.c / aiff.c export_head + body + tail for 16-bit little-endian PCM
+export function wav_export_bytes(pcm, channels, rate, title) {
+	const fp = new Disko();
+	const bpf = wav_header(fp, 16, channels, rate, 0);
+	void bpf;
+	fp.write(pcm);
+	write_wav_list(fp, title);
+	const end = fp.tell();
+	fp.seek(4); fp.u32(end - 8);
+	fp.seek(40); fp.u32(pcm.length);
+	fp.seek(end);
+	return fp.bytes();
+}
+export function aiff_export_bytes(pcm, channels, rate, title) {
+	const fp = new Disko();
+	const h = aiff_header(fp, 16, channels, rate, title, 0xffffffff, null);
+	const swapped = new Uint8Array(pcm.length);
+	for (let i = 0; i + 1 < pcm.length; i += 2) { swapped[i] = pcm[i + 1]; swapped[i + 1] = pcm[i]; }
+	fp.write(swapped);
+	const end = fp.tell();
+	const be32 = v => fp.write([(v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff]);
+	fp.seek(4); be32(end - 8);
+	fp.seek(h.comm_frames); be32(Math.trunc(pcm.length / h.bpf));
+	fp.seek(h.ssnd_size); be32(pcm.length + 8);
+	fp.seek(end);
+	return fp.bytes();
+}
+// kept for callers that want a plain stereo WAV of the whole song
+export async function song_export_wav(song, rate = 44100, progress) {
+	const r = await song_export_render(song, false, rate, progress);
+	return wav_export_bytes(r.files[0] ? r.files[0].pcm : new Uint8Array(0), r.channels, r.rate, r.title);
 }
 
 
@@ -574,9 +751,22 @@ export const song_save_formats = [
 	{ label: 'S3M', ext: 's3m', save: fmt_s3m_save_song },
 	{ label: 'MOD', ext: 'mod', save: fmt_mod_save_song },
 ];
+// audio_loadsave.c: song_export_formats (FLAC left out: no encoder in the browser)
 export const song_export_formats = [
-	{ label: 'WAV', ext: 'wav' },
+	{ label: 'WAV', name: 'WAV', ext: '.wav', multi: 0, write: wav_export_bytes },
+	{ label: 'MWAV', name: 'WAV multi-write', ext: '.wav', multi: 1, write: wav_export_bytes },
+	{ label: 'AIFF', name: 'Audio IFF', ext: '.aiff', multi: 0, write: aiff_export_bytes },
+	{ label: 'MAIFF', name: 'Audio IFF multi-write', ext: '.aiff', multi: 1, write: aiff_export_bytes },
 ];
-export const sample_save_formats = { ITS: ['its', fmt_its_save_sample], WAV: ['wav', fmt_wav_save_sample], RAW: ['raw', fmt_raw_save_sample] };
+// audio_loadsave.c: sample_save_formats (FLAC is left out: no encoder in the browser)
+export const sample_save_formats = [
+	{ label: 'ITS', name: 'Impulse Tracker', ext: '.its', save: fmt_its_save_sample },
+	{ label: 'S3I', name: 'Scream Tracker', ext: '.s3i', save: fmt_s3i_save_sample },
+	{ label: 'SBI', name: 'Sound Blaster', ext: '.sbi', save: fmt_sbi_save_sample },
+	{ label: 'AIFF', name: 'Audio IFF', ext: '.aiff', save: fmt_aiff_save_sample },
+	{ label: 'AU', name: 'Sun/NeXT', ext: '.au', save: fmt_au_save_sample },
+	{ label: 'WAV', name: 'WAV', ext: '.wav', save: fmt_wav_save_sample },
+	{ label: 'RAW', name: 'Raw', ext: '.raw', save: fmt_raw_save_sample },
+];
 
 provide({ fmt_s3m_save_song, fmt_mod_save_song, fmt_it_save_song, fmt_its_save_sample, fmt_iti_save_instrument, fmt_wav_save_sample, fmt_raw_save_sample, song_export_wav });

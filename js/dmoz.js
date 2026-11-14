@@ -4,6 +4,7 @@
 // real disk with a file picker or drag-and-drop, and saved files can also be
 // downloaded.
 import { provide } from './app.js';
+import { mmcmp_unpack, slurp_unpack } from './fmt/mmcmp.js';
 import { status, NEED_UPDATE, DIR_MODULES_CHANGED, DIR_SAMPLES_CHANGED, DIR_INSTRUMENTS_CHANGED } from './state.js';
 
 const files = new Map();   // path -> { data: Uint8Array, mtime: number }
@@ -48,6 +49,7 @@ export async function dmoz_init() {
 		});
 	}
 	for (const p of files.keys()) add_parent_dirs(p);
+	await Promise.all([...files.values()].map(unpack_entry));
 	// bundled demo files (served next to the page)
 	for (const name of ['demo/tute.it']) {
 		const path = '/Demo/' + name.split('/').pop();
@@ -86,13 +88,24 @@ function add_parent_dirs(p) {
 
 export function dmoz_is_dir(p) { return dirs.has(dmoz_path_normal(p)); }
 export function dmoz_file_exists(p) { return files.has(dmoz_path_normal(p)); }
-export function dmoz_read_file(p) { const f = files.get(dmoz_path_normal(p)); return f ? f.data : null; }
+// files are kept as stored; packed ones (gzip, MMCMP) get an unpacked view as slurp.c does
+const view = f => f.unpacked || f.data;
+function unpack_entry(f) {
+	const m = mmcmp_unpack(f.data);
+	if (m) { f.unpacked = m; return Promise.resolve(); }
+	if (f.data[0] !== 0x1f || f.data[1] !== 0x8b) return Promise.resolve();
+	return slurp_unpack(f.data).then(u => {
+		if (u) { f.unpacked = u; status.flags |= DIR_MODULES_CHANGED | DIR_SAMPLES_CHANGED | DIR_INSTRUMENTS_CHANGED | NEED_UPDATE; }
+	});
+}
+export function dmoz_read_file(p) { const f = files.get(dmoz_path_normal(p)); return f ? view(f) : null; }
 export function dmoz_write_file(p, data) {
 	p = dmoz_path_normal(p);
 	const v = { data: data instanceof Uint8Array ? data : new Uint8Array(data), mtime: Date.now() };
 	files.set(p, v);
 	add_parent_dirs(p);
 	idb_put(p, { data: v.data.slice().buffer, mtime: v.mtime });
+	return unpack_entry(v);
 	status.flags |= DIR_MODULES_CHANGED | DIR_SAMPLES_CHANGED | DIR_INSTRUMENTS_CHANGED;
 }
 export function dmoz_remove(p) {
@@ -122,7 +135,7 @@ export function dmoz_read_directory(dir) {
 	for (const d of [...sub].sort((a, b) => a.toLowerCase() < b.toLowerCase() ? -1 : 1)) out.dirs.push({ path: d, base: dmoz_path_get_basename(d) });
 	for (const [p, f] of files) {
 		if (!p.startsWith(prefix) || p.slice(prefix.length).includes('/')) continue;
-		out.files.push({ path: p, base: dmoz_path_get_basename(p), size: f.data.length, mtime: f.mtime, data: f.data });
+		out.files.push({ path: p, base: dmoz_path_get_basename(p), size: f.data.length, mtime: f.mtime, data: view(f) });
 	}
 	out.files.sort((a, b) => a.base.toLowerCase() < b.base.toLowerCase() ? -1 : a.base.toLowerCase() > b.base.toLowerCase() ? 1 : 0);
 	return out;
@@ -147,7 +160,7 @@ export function dmoz_import_files(dir, done) {
 	input.onchange = async () => {
 		const names = [];
 		for (const f of input.files) {
-			dmoz_write_file(dmoz_path_concat(dir, f.name), new Uint8Array(await f.arrayBuffer()));
+			await dmoz_write_file(dmoz_path_concat(dir, f.name), new Uint8Array(await f.arrayBuffer()));
 			names.push(f.name);
 		}
 		status.flags |= NEED_UPDATE;

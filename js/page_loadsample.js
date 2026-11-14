@@ -366,15 +366,16 @@ function make_browser(kind) {
 	function page_handle_key(k) {
 		// keyjazz the highlighted sample through the hidden slot 0
 		if (kind !== 'sample' || (k.mod & (KEYMOD.ALT | KEYMOD.CTRL))) return;
-		const n = kbd_get_note(k);
-		if (n <= 0 || n > 120) return;
+		let n, v = -1;
+		if (k.midi_note > -1) { n = k.midi_note; if (k.midi_volume > -1) v = k.midi_volume >> 1; }
+		else { n = kbd_get_note(k); if (n <= 0 || n > 120) return; }
 		const s = preview_sample();
 		if (!s || !s.data) return;
 		const slot = current_song.samples[0];
 		if (k.state === KEY_RELEASE) { song_keyup(KEYJAZZ_INST_FAKE, KEYJAZZ_NOINST, n); return; }
 		if (k.is_repeat) return;
 		if (slot.data !== s.data) Object.assign(slot, s);
-		song_keydown(KEYJAZZ_INST_FAKE, KEYJAZZ_NOINST, n, -1, KEYJAZZ_CHAN_CURRENT);
+		song_keydown(KEYJAZZ_INST_FAKE, KEYJAZZ_NOINST, n, v, KEYJAZZ_CHAN_CURRENT);
 		last_note = n;
 	}
 	function set_page_cb() {

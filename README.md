@@ -12,7 +12,11 @@ Live: https://markldn.github.io/schism-web/
 ![Pattern editor with demo/tute.it loaded](screenshots/02-pattern-editor.png)
 
 Load modules by dropping them on the window or with F9 -> `[Import from disk]`.
-IT, XM, S3M and MOD load; IT, S3M and MOD save (saved files also download).
+IT, XM, S3M, MOD and many older tracker formats load, along with MIDI and
+Doom MUS. IT, S3M and MOD save (saved files also download); WAV/AIFF audio
+export includes per-channel files. AdLib playback, Web MIDI and a waterfall
+visualiser are included. Use IT to preserve songs: conversion to older formats
+can lose instruments, notes or effects.
 See PROGRESS.md for what works and what doesn't, PORTING.md per C file.
 
     python3 test/parity.py     # pixel-compare against the original (needs ../schism-web/dist)

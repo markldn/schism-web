@@ -155,7 +155,10 @@ export function fx_fine_vibrato(chan, param) {
 
 // libc rand() sequences are platform-specific. Callers can inject raw rand
 // values for repeatable render comparisons; default range matches Linux RAND_MAX.
-const random_raw = () => Math.floor(Math.random() * 0x80000000);
+let rand_source = () => Math.floor(Math.random() * 0x80000000);
+const random_raw = () => rand_source();
+// test hook: replace the rand() source (e.g. a constant, for comparisons against C)
+export function csf_set_rand(fn) { rand_source = fn; }
 function waveform(type, position) {
 	if (type === 1) return ramp_down_table[position];
 	if (type === 2) return square_table[position];

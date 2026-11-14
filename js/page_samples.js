@@ -21,6 +21,11 @@ import { current_song, song_get_sample, song_get_instrument, song_get_playing_sa
 import { csf_sample_is_empty, csf_stop_sample, csf_adjust_sample_loop } from './csndfile.js';
 import { calc_halftone } from './effects.js';
 import * as SE from './sample-edit.js';
+import { sample_save_formats } from './fmt/savers.js';
+import { ui } from './widget.js';
+import { dmoz_path_concat, dmoz_path_get_basename, dmoz_file_exists, dmoz_write_file, download_file } from './dmoz.js';
+import { cfg as dir_cfg } from './page_loadmodule.js';
+import { DIR_SAMPLES_CHANGED } from './state.js';
 
 const MAX_SAMPLES = 236;
 const sample_image = vgamem_ovl_alloc({ x1: 55, y1: 26, x2: 76, y2: 29 });
@@ -343,10 +348,80 @@ function sample_toggle_solo(n) {
 	for (let i = 1; i < MAX_SAMPLES; i++) sample_set_mute(i, solo && i !== n);
 }
 
-function sample_save(format) {
+function sample_save(filename, format) {
 	const s = cur();
-	if (!s.filename && !s.name) { flash('Sample NOT saved! (No Filename?)'); return; }
-	app.song_save_sample(null, format, s, current_sample);
+	if (!(filename != null ? filename : s.filename)) { flash('Sample NOT saved! (No Filename?)'); return; }
+	const path = dmoz_path_concat(dir_cfg.dir_samples || '/', filename != null ? filename : s.filename);
+	const go = () => song_save_sample(path, format, song_get_sample(current_sample), current_sample);
+	if (filename && dmoz_file_exists(path)) dialog_create(DIALOG_OK_CANCEL, 'Overwrite file?', go, null, 1, null);
+	else go();
+}
+
+// audio_loadsave.c: song_save_sample (the file also goes to the browser's downloads)
+export function song_save_sample(path, type, smp, num) {
+	const err = why => flash(`Error: Sample ${num} NOT saved! (${why})`);
+	const fmt = sample_save_formats.find(f => f.label === type);
+	if (!fmt) return;
+	if (!path || !dmoz_path_get_basename(path)) { err('No Filename?'); return; }
+	const bytes = fmt.save(smp);
+	if (!bytes) { err('Unsupported Data'); return; }
+	dmoz_write_file(path, bytes);
+	download_file(dmoz_path_get_basename(path), bytes);
+	status.flags |= DIR_SAMPLES_CHANGED;
+	flash(`${fmt.name} sample saved (sample ${num})`);
+}
+
+// export sample dialog (Alt-T)
+let export_sample_format = 0;
+const export_filename = { value: '' };
+let export_sample_widgets = [];
+function export_sample_list_draw() {
+	const focused = ui.holder.selected_widget === 3;
+	draw_fill_chars(53, 24, 56, 31, DEFAULT_FG, 0);
+	sample_save_formats.forEach((f, c) => {
+		let fg = 6, bg = 0;
+		if (focused && c === export_sample_format) { fg = 0; bg = 3; }
+		else if (c === export_sample_format) bg = 14;
+		draw_text_len(f.label, 4, 53, 24 + c, fg, bg);
+	});
+}
+function export_sample_list_handle_key(k) {
+	let nf = export_sample_format;
+	if (k.state === KEY_RELEASE) return 0;
+	switch (k.sym) {
+	case KEYSYM.UP: if (!NO_MODIFIER(k.mod)) return 0; nf--; break;
+	case KEYSYM.DOWN: if (!NO_MODIFIER(k.mod)) return 0; nf++; break;
+	case KEYSYM.PAGEUP: case KEYSYM.HOME: if (!NO_MODIFIER(k.mod)) return 0; nf = 0; break;
+	case KEYSYM.PAGEDOWN: case KEYSYM.END: if (!NO_MODIFIER(k.mod)) return 0; nf = sample_save_formats.length - 1; break;
+	case KEYSYM.TAB:
+		if (k.mod & KEYMOD.SHIFT) { widget_change_focus_to(0); return 1; }
+		// fall through
+	case KEYSYM.LEFT: case KEYSYM.RIGHT:
+		if (!NO_MODIFIER(k.mod)) return 0;
+		widget_change_focus_to(0);
+		return 1;
+	default: return 0;
+	}
+	nf = Math.max(0, Math.min(sample_save_formats.length - 1, nf));
+	if (nf !== export_sample_format) { export_sample_format = nf; status.flags |= NEED_UPDATE; }
+	return 1;
+}
+function export_sample_draw_const() {
+	draw_text('Export Sample', 34, 21, 0, 2);
+	draw_text('Filename', 24, 24, 0, 2);
+	draw_box(32, 23, 51, 25, BOX_THICK | BOX_INNER | BOX_INSET);
+	draw_box(52, 23, 57, 32, BOX_THICK | BOX_INNER | BOX_INSET);
+}
+function export_sample_dialog() {
+	export_filename.value = cur().filename || '';
+	export_sample_widgets = [
+		widget_create_textentry(33, 24, 18, 0, 1, 3, null, export_filename, 255),
+		widget_create_button(31, 35, 6, 0, 1, 2, 2, 2, dialog_yes_NULL, 'OK', 3),
+		widget_create_button(42, 35, 6, 3, 2, 1, 1, 1, dialog_cancel_NULL, 'Cancel', 1),
+		widget_create_other(0, export_sample_list_handle_key, null, export_sample_list_draw),
+	];
+	const d = dialog_create_custom(21, 20, 39, 18, export_sample_widgets, 4, 0, export_sample_draw_const, null);
+	d.action_yes = () => sample_save(export_filename.value, sample_save_formats[export_sample_format].label);
 }
 
 function sample_list_handle_alt_key(k) {
@@ -374,7 +449,7 @@ function sample_list_handle_alt_key(k) {
 		return;
 	case KEYSYM.m: if (canmod) sample_amplify_dialog(); return;
 	case KEYSYM.n: song_toggle_multichannel_mode(); return;
-	case KEYSYM.o: sample_save('ITS'); return;
+	case KEYSYM.o: sample_save(null, 'ITS'); return;
 	case KEYSYM.p: smpprompt_create('Copy sample:', 'Sample', do_copy_sample); return;
 	case KEYSYM.q:
 		if (canmod) dialog_create(DIALOG_YES_NO, 'Convert sample?', () => SE.sample_toggle_quality(cur(), 1), () => {
@@ -384,7 +459,7 @@ function sample_list_handle_alt_key(k) {
 		return;
 	case KEYSYM.r: smpprompt_create('Replace sample with:', 'Sample', do_replace_sample); return;
 	case KEYSYM.s: smpprompt_create('Swap sample with:', 'Sample', do_swap_sample); return;
-	case KEYSYM.t: sample_save('WAV'); return;
+	case KEYSYM.t: export_sample_dialog(); return;
 	case KEYSYM.v:
 		if (!canmod || (status.flags & CLASSIC_MODE)) return;
 		if (!(sample.flags & (C.CHN_LOOP | C.CHN_SUSTAINLOOP))) { dialog_create(DIALOG_OK, 'Crossfade requires a sample loop to work.', null, null, 0, null); return; }
@@ -438,10 +513,11 @@ function sample_list_handle_key(k) {
 	default:
 		if (k.mod & KEYMOD.ALT) { if (!rel) sample_list_handle_alt_key(k); }
 		else if (!k.is_repeat) {
-			const n = k.sym === KEYSYM.SPACE ? last_note : kbd_get_note(k);
-			if (n <= 0 || n > 120) return;
+			let n, v = KEYJAZZ_DEFAULTVOL;
+			if (k.midi_note > -1) { n = k.midi_note; if (k.midi_volume > -1) v = k.midi_volume >> 1; }
+			else { n = k.sym === KEYSYM.SPACE ? last_note : kbd_get_note(k); if (n <= 0 || n > 120) return; }
 			if (rel) song_keyup(current_sample, KEYJAZZ_NOINST, n);
-			else { song_keydown(current_sample, KEYJAZZ_NOINST, n, KEYJAZZ_DEFAULTVOL, KEYJAZZ_CHAN_CURRENT); last_note = n; }
+			else { song_keydown(current_sample, KEYJAZZ_NOINST, n, v, KEYJAZZ_CHAN_CURRENT); last_note = n; }
 		}
 		return;
 	}

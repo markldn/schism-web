@@ -861,10 +861,11 @@ function instrument_list_handle_key(k) {
 	default:
 		if (k.mod & KEYMOD.ALT) instrument_list_handle_alt_key(k);
 		else {
-			const n = kbd_get_note(k);
-			if (n <= 0 || n > 120) return;
+			let n, v = 64;
+			if (k.midi_note > -1) { n = k.midi_note; if (k.midi_volume > -1) v = k.midi_volume >> 1; }
+			else { n = kbd_get_note(k); if (n <= 0 || n > 120) return; }
 			if (rel) { song_keyup(KEYJAZZ_NOINST, current_instrument, n); status.last_keysym = 0; }
-			else if (!k.is_repeat) song_keydown(KEYJAZZ_NOINST, current_instrument, n, 64, KEYJAZZ_CHAN_AUTO);
+			else if (!k.is_repeat) song_keydown(KEYJAZZ_NOINST, current_instrument, n, v, KEYJAZZ_CHAN_AUTO);
 			last_note = n;
 		}
 	}

@@ -22,7 +22,9 @@ import { current_song, song_get_pattern, song_get_pattern_buf, song_get_mode, MO
 	song_is_instrument_mode, song_get_current_instrument, song_keydown, song_keyup, song_keyrecord,
 	song_single_step, song_start_at_order, song_start_at_pattern, song_loop_pattern, song_toggle_channel_mute,
 	song_handle_channel_solo, song_find_last_channel, song_set_current_order, song_get_current_order,
-	song_get_current_row, song_get_playing_pattern, KEYJAZZ_NOINST, KEYJAZZ_DEFAULTVOL } from './song.js';
+	song_get_current_row, song_get_playing_pattern, KEYJAZZ_NOINST, KEYJAZZ_DEFAULTVOL,
+	song_get_current_speed, song_get_current_tick, song_get_pattern_offset } from './song.js';
+import { midi, MIDI_TICK_QUANTIZE, MIDI_RECORD_NOTEOFF, MIDI_RECORD_VELOCITY, MIDI_PITCHBEND } from './midi.js';
 import { csf_get_num_patterns } from './csndfile.js';
 
 const MAX_CHANNELS = 64;
@@ -1101,6 +1103,91 @@ function patedit_record_note(cur_note, channel, row, note, force) {
 	return r;
 }
 
+// page_patedit.c: pattern_editor_insert_midi
+let midi_start_record = 0;
+export const midi_last_bend_hit = new Int32Array(MAX_CHANNELS);
+function pattern_editor_insert_midi(k) {
+	let cur_note = null, n, v = 0, pd, offset = 0, quantize_next_row = 0;
+	let r = current_row, c = current_channel;
+	const p0 = current_pattern;
+	let ins = KEYJAZZ_NOINST, smp = KEYJAZZ_NOINST;
+	const song_was_playing = SONG_PLAYING();
+	if (song_is_instrument_mode()) ins = app.instrument_get_current();
+	else smp = app.sample_get_current();
+	status.flags |= SONG_NEEDS_SAVE;
+	const speed = song_get_current_speed();
+	let tick = song_get_current_tick();
+	if (midi_start_record && !SONG_PLAYING()) {
+		if (midi_start_record === 1) song_loop_pattern(p0, r);
+		else song_start_at_pattern(p0, r);
+		tracker.midi_playback_tracing = tracker.playback_tracing;
+		tracker.playback_tracing = 1;
+	}
+	if ((midi.flags & MIDI_TICK_QUANTIZE) && song_was_playing && tracker.playback_tracing && tick > 0 && tick <= Math.trunc(speed / 2) + 1) {
+		offset++;
+		quantize_next_row = 1;
+	}
+	const off = song_get_pattern_offset(p0, r, offset); // [length, pattern number, row]
+	if (!off[0]) return 0;
+	const pattern = song_get_pattern_buf(off[1]);
+	r = off[2];
+	if (!pattern) return 0;
+	if (k.midi_note === -1) {
+		/* nada */
+	} else if (k.state === KEY_RELEASE) {
+		c = song_keyup(KEYJAZZ_NOINST, KEYJAZZ_NOINST, k.midi_note);
+		if (c <= 0) return 0;
+		if (!((midi.flags & MIDI_RECORD_NOTEOFF) && (song_get_mode() & (MODE_PLAYING | MODE_PATTERN_LOOP)) && tracker.playback_tracing)) return 0;
+		cur_note = pattern[MAX_CHANNELS * r + (c - 1)];
+		patedit_record_note(cur_note, c, r, C.NOTE_OFF, 0);
+	} else {
+		v = k.midi_volume > -1 ? k.midi_volume >> 1 : 0;
+		if (!((song_get_mode() & (MODE_PLAYING | MODE_PATTERN_LOOP)) && tracker.playback_tracing)) tick = 0;
+		n = k.midi_note;
+		if (!quantize_next_row) c = song_keydown(smp, ins, n, v, c);
+		cur_note = pattern[MAX_CHANNELS * r + (c - 1)];
+		patedit_record_note(cur_note, c, r, n, 0);
+		if (!template_mode) {
+			cur_note.instrument = song_get_current_instrument();
+			if (midi.flags & MIDI_RECORD_VELOCITY) { cur_note.voleffect = C.VOLFX_VOLUME; cur_note.volparam = v; }
+			tick %= speed;
+			if (!(midi.flags & MIDI_TICK_QUANTIZE) && !cur_note.effect && tick !== 0) {
+				cur_note.effect = C.FX_SPECIAL;
+				cur_note.param = 0xd0 | Math.min(tick, 15);
+			}
+		}
+	}
+	if (!(midi.flags & MIDI_PITCHBEND) || midi.pitch_depth === 0 || k.midi_bend === 0) {
+		if (k.state === KEY_RELEASE && k.midi_note > -1 && cur_note && cur_note.instrument > 0) {
+			song_keyrecord(cur_note.instrument, cur_note.instrument, cur_note.note, v, c + 1, cur_note.effect, cur_note.param);
+			pattern_selection_system_copyout();
+		}
+		return -1;
+	}
+	for (c = 0; c < MAX_CHANNELS; c++) {
+		if ((channel_multi[c] & 1) && (channel_multi[c] & ~1)) {
+			cur_note = pattern[MAX_CHANNELS * r + c];
+			if (cur_note.effect) {
+				if (cur_note.effect !== C.FX_PORTAMENTOUP && cur_note.effect !== C.FX_PORTAMENTODOWN) continue;
+				pd = midi_last_bend_hit[c];
+			} else {
+				pd = midi_last_bend_hit[c];
+				midi_last_bend_hit[c] = k.midi_bend;
+			}
+			pd = Math.trunc(Math.trunc((k.midi_bend - pd) * midi.pitch_depth / 8192) * speed / 2);
+			pd = Math.max(-0x7f, Math.min(0x7f, pd));
+			if (pd < 0) { cur_note.effect = C.FX_PORTAMENTODOWN; cur_note.param = -pd; }
+			else if (pd > 0) { cur_note.effect = C.FX_PORTAMENTOUP; cur_note.param = pd; }
+			if (k.midi_note === -1 || k.state === KEY_RELEASE) continue;
+			if (cur_note.instrument < 1) continue;
+			v = cur_note.voleffect === C.VOLFX_VOLUME ? cur_note.volparam : -1;
+			song_keyrecord(cur_note.instrument, cur_note.instrument, cur_note.note, v, c + 1, cur_note.effect, cur_note.param);
+		}
+	}
+	pattern_selection_system_copyout();
+	return -1;
+}
+
 function pattern_editor_insert(k) {
 	const p = pattern();
 	let ins, smp, j, n, vol;
@@ -1486,7 +1573,9 @@ function pattern_editor_handle_ctrl_key(k) {
 		return 1;
 	case KEYSYM.x: case KEYSYM.z:
 		if (rel) return 1;
-		flash('MIDI input is not available in this port');
+		midi_start_record++;
+		if (midi_start_record > 2) midi_start_record = 0;
+		flash(['No MIDI Trigger', 'Pattern MIDI Trigger', 'Song MIDI Trigger'][midi_start_record]);
 		return 1;
 	case KEYSYM.BACKSPACE: if (rel) return 1; pattern_editor_display_history(); return 1;
 	default: return 0;
@@ -1587,6 +1676,7 @@ function pattern_editor_handle_key(k) {
 		}
 		return -1;
 	}
+	if (k.midi_note > -1 || k.midi_bend !== 0) return pattern_editor_insert_midi(k);
 	const rel = k.state === KEY_RELEASE;
 	switch (k.sym) {
 	case KEYSYM.UP:

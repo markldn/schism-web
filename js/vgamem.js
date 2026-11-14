@@ -57,7 +57,7 @@ font_reset();
 
 const vgamem = new Int32Array(4000);
 const vgamem_read = new Int32Array(4000);
-const ovl = new Uint8Array(640 * 400);
+export const ovl = new Uint8Array(640 * 400);
 
 export function vgamem_flip() { vgamem_read.set(vgamem); }
 export function vgamem_clear() { vgamem.fill(0); }

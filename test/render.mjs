@@ -8,11 +8,12 @@ function moduleURL(file) { return new URL(file, root).href;
 	source = source.replace(/from\s+(["'])(\.\.?\/[^"']+)\1/g, (_, q, rel) => 'from ' + JSON.stringify(moduleURL(new URL(rel, path).href)));
 	const result = 'data:text/javascript;base64,' + Buffer.from(source).toString('base64'); urls.set(path.href, result); return result;
 }
-for (const f of ['js/csndfile.js', 'js/effects.js', 'js/sndmix.js', 'js/filters.js', 'js/mixutil.js', 'js/mixer.js', 'js/equalizer.js']) await import(moduleURL(f));
+for (const f of ['js/midimacro.js', 'js/csndfile.js', 'js/effects.js', 'js/sndmix.js', 'js/filters.js', 'js/mixutil.js', 'js/mixer.js', 'js/equalizer.js']) await import(moduleURL(f));
 const { app, provide, missing_calls } = await import(moduleURL('js/app.js'));
 const noop = () => {};
 provide({ csf_midi_out_note: noop, GM_KeyOff: noop, GM_Touch: noop, GM_IncrementSongCounter: noop, Fmdrv_Mix: noop, Fmdrv_Init: noop, GM_Reset: noop, OPL_NoteOff: noop, OPL_Patch: noop });
 const L = await import(moduleURL('js/fmt/loaders.js'));
+await import(moduleURL('js/fmt/loaders2.js'));
 const [, , inp, out = '/tmp/out.wav', secs = '20'] = process.argv;
 let t0 = performance.now();
 const song = L.song_create_load(fs.readFileSync(inp));

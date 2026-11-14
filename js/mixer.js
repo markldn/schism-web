@@ -5,7 +5,8 @@ import { cubic_spline_lut, windowed_fir_lut } from './gen/interpolation.js';
 const whole = n => BigInt(n | 0) << 32n;
 const wrap = n => BigInt.asIntN(64, n);
 export function distance_to_buffer_length(from, to, increment) {
-	return from.v < to.v ? Number(BigInt.asUintN(32, wrap(wrap(to.v - from.v) - whole(1)) / increment.v + 1n)) : 1;
+	// (uint32_t)(...) + 1 wraps in 32 bits and lands in an int32_t sample count, as in C
+	return from.v < to.v ? Number(BigInt.asIntN(32, BigInt.asUintN(32, wrap(wrap(to.v - from.v) - whole(1)) / increment.v) + 1n)) : 1;
 }
 export function get_sample_count(mls, chan, samples) {
 	const loop_start = chan.flags & 2 ? chan.loop_start : 0;
@@ -92,7 +93,7 @@ export function mix_kernel(channel, buffer, start, frames, mode = 0, ramp = fals
 	if (mode < 0 || mode > 3) throw new RangeError('Invalid interpolation mode');
 	const bits = channel.flags & 1 ? 16 : 8, stereo = channel.flags & 64 ? 1 : 0, channels = stereo + 1;
 	const pointer = channel.current_sample_data;
-	const data = pointer.data || pointer, offset = pointer.byteOffset || 0;
+	const data = pointer.data || pointer, offset = pointer.data ? (pointer.byteOffset || 0) : 0;
 	// Typed view over the whole padded allocation so negative indexes reach the
 	// pre-padding exactly like the C pointer arithmetic does.
 	const mem = bits === 16 ? (data._i16 || (data._i16 = new Int16Array(data.buffer)))
@@ -228,7 +229,7 @@ export function fake_vu_meter(channel, smpcount, len) {
 	const bits = channel.flags & 1 ? 16 : 8, bytes = bits / 8;
 	const pointer = channel.current_sample_data, data = pointer.data || pointer;
 	const view = new DataView(data.buffer);
-	let offset = data.byteOffset + (pointer.byteOffset || 0) + Number(channel.position.v >> 32n) * bytes;
+	let offset = data.byteOffset + (pointer.data ? (pointer.byteOffset || 0) : 0) + Number(channel.position.v >> 32n) * bytes;
 	const length = Number(len.v >> 32n);
 	if (length < 0) offset -= length * bytes;
 	const count = Math.abs(length) * bytes;

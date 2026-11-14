@@ -3,13 +3,18 @@ import fs from 'fs';
 import assert from 'assert/strict';
 const root = new URL('../', import.meta.url);
 const dataModule = source => 'data:text/javascript;base64,' + Buffer.from(source).toString('base64');
-const appSource = fs.readFileSync(new URL('js/app.js', root), 'utf8');
-const appURL = dataModule(appSource);
-const voiceURL = dataModule(fs.readFileSync(new URL('js/gen/voice.js', root), 'utf8'));
-const tablesURL = dataModule(fs.readFileSync(new URL('js/gen/tables.js', root), 'utf8'));
-const source = fs.readFileSync(new URL('js/csndfile.js', root), 'utf8')
-	.replace("'./app.js'", JSON.stringify(appURL)).replace("'./gen/voice.js'", JSON.stringify(voiceURL)).replace("'./gen/tables.js'", JSON.stringify(tablesURL));
-const m = await import(dataModule(source));
+const urls = new Map();
+function moduleURL(file) {
+	const path = new URL(file, root);
+	if (urls.has(path.href)) return urls.get(path.href);
+	const source = fs.readFileSync(path, 'utf8').replace(/from\s+(["'])(\.\.?\/[^"']+)\1/g,
+		(_, quote, relative) => 'from ' + JSON.stringify(moduleURL(new URL(relative, path).href)));
+	const result = dataModule(source);
+	urls.set(path.href, result);
+	return result;
+}
+const m = await import(moduleURL('js/csndfile.js'));
+const appURL = moduleURL('js/app.js');
 const { app, is_ported } = await import(appURL);
 const s = m.csf_allocate();
 assert.equal(m.csf_get_num_samples(s), 0);

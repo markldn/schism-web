@@ -143,3 +143,10 @@ s3m_effects = {letter: fx[name] for letter, name in re.findall(r"case '([A-Z])':
 assert len(s3m_effects) == 26
 with (OUT / 'tables.js').open('a') as output:
     output.write('export const S3M_EFFECTS = Object.freeze(' + json.dumps(s3m_effects) + ');\n')
+
+# ---- AdLib General MIDI patch bank (player/fmpatches.c) ---------------------
+fmp = re.sub(r'/\*.*?\*/|//[^\n]*', '', (SRC / 'player/fmpatches.c').read_text(), flags=re.S)
+body = re.search(r'patches\[\]\[11\]\s*=\s*\{(.*?)\};', fmp, re.S).group(1)
+rows = [[int(v.strip(), 0) for v in row.split(',') if v.strip()] for row in re.findall(r'\{([^{}]*)\}', body)]
+assert len(rows) == 128 and all(len(r) == 11 for r in rows), (len(rows),)
+(OUT / 'fmpatches.js').write_text(HDR + 'export const fm_patches = Object.freeze(' + json.dumps(rows) + '.map(r => Uint8Array.from(r)));\n')

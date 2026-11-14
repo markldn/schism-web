@@ -15,7 +15,7 @@ import { dmoz_read_directory, dmoz_read_file, dmoz_write_file, dmoz_remove, dmoz
 	dmoz_path_get_basename, dmoz_path_get_extension, dmoz_is_dir, dmoz_file_exists, dmoz_import_files, download_file } from './dmoz.js';
 import { dmoz_file_info, TYPE_MODULE_MASK, TYPE_MODULE_MOD, TYPE_MODULE_S3M, TYPE_MODULE_XM, TYPE_MODULE_IT, TYPE_SAMPLE_COMPR } from './fmt/info.js';
 import { song_create_load } from './fmt/loaders.js';
-import { fmt_it_save_song, fmt_s3m_save_song, fmt_mod_save_song, song_export_wav } from './fmt/savers.js';
+import { fmt_it_save_song, fmt_s3m_save_song, fmt_mod_save_song, song_export_render, song_export_formats } from './fmt/savers.js';
 import { csf_get_length } from './csndfile.js';
 
 export const cfg = { dir_modules: '/', dir_samples: '/', dir_instruments: '/' };
@@ -24,7 +24,7 @@ const GLOB_EXPORT = '*.wav; *.aiff; *.aif';
 const IMPORT_ENTRY = '[Import from disk]';
 
 const song_save_formats = [{ label: 'IT', ext: '.it', save: fmt_it_save_song }, { label: 'S3M', ext: '.s3m', save: fmt_s3m_save_song }, { label: 'MOD', ext: '.mod', save: fmt_mod_save_song }];
-const song_export_formats = [{ label: 'WAV', ext: '.wav' }];
+
 
 let top_file = 0, top_dir = 0, current_file = 0, current_dir = 0;
 let flist = [], dlist = [];
@@ -113,15 +113,28 @@ export function song_save(filename, type) {
 	return 1;
 }
 export async function song_export(filename, type) {
+	const format = song_export_formats.find(f => f.label === type) || song_export_formats[0];
+	// mangle_filename: add the extension, and ".%c" (channel number) for multi-write
 	let path = filename;
-	if (!dmoz_path_get_extension(path)) path += '.wav';
+	if (!dmoz_path_get_extension(path)) path += format.ext;
+	if (format.multi && !/%c/i.test(path)) {
+		const ext = dmoz_path_get_extension(path);
+		path = path.slice(0, path.length - ext.length) + '.%c' + ext;
+	}
+	optional('log_appendf', 2, `Exporting to ${format.name}`);
 	app.status_text_flash('Rendering ' + dmoz_path_get_basename(path) + '...');
-	const bytes = await song_export_wav(current_song, 44100, sec => app.status_text_flash(`Rendering... ${Math.trunc(sec)} s`));
-	dmoz_write_file(path, bytes);
-	download_file(dmoz_path_get_basename(path), bytes);
-	app.status_text_flash(`Exported ${dmoz_path_get_basename(path)} (${Math.round(bytes.length / 1024)}k)`);
+	const r = await song_export_render(current_song, format.multi, 44100, sec => app.status_text_flash(`Exporting song...${String(Math.trunc(sec / 60)).padStart(6)}:${String(Math.trunc(sec) % 60).padStart(2, '0')}`));
+	let total = 0;
+	for (const f of r.files) {
+		const p = format.multi ? path.replace(/%c/i, String(f.channel).padStart(2, '0')) : path;
+		const bytes = format.write(f.pcm, r.channels, r.rate, r.title);
+		dmoz_write_file(p, bytes);
+		download_file(dmoz_path_get_basename(p), bytes);
+		total += bytes.length;
+	}
+	optional('log_appendf', 5, ` ${r.rate} Hz, 16 bit, ${r.channels === 1 ? 'mono' : 'stereo'}`);
+	app.status_text_flash(`${r.files.length} file${r.files.length === 1 ? '' : 's'} exported (${Math.round(total / 1024)}k)`);
 	status.flags |= NEED_UPDATE;
-	void type;
 	return 1;
 }
 function do_save_song(path) {

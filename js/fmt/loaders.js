@@ -7,6 +7,7 @@ import * as C from '../sndconst.js';
 import { csf_allocate, csf_allocate_pattern, csf_allocate_instrument, csf_read_sample,
 	csf_import_s3m_effect, csf_insert_restart_pos } from '../csndfile.js';
 import { transpose_to_frequency } from '../effects.js';
+import { copy_midi_config } from '../midimacro.js';
 import { QUIRK, finetune_table, vc_portamento_table } from '../gen/tables.js';
 
 // ------------------------------------------------------------------------
@@ -1144,7 +1145,7 @@ function fmt_mod_load_song(song, fp, force) {
 	for (let pat = 0; pat <= npat; pat++) {
 		const pattern = song.patterns[pat] = csf_allocate_pattern(64);
 		song.pattern_size[pat] = song.pattern_alloc_size[pat] = 64;
-		if (fp.position + 64 * nchan * 4 > fp.bytes.length && !force) return LOAD_UNSUPPORTED;
+		if (fp.position + 64 * (startrekker ? 8 : nchan) * 4 > fp.bytes.length) return LOAD_UNSUPPORTED;
 		if (startrekker) {
 			for (let half = 0; half < 2; half++)
 				for (let n = 0; n < 64; n++) for (let chan = 0; chan < 4; chan++) rd(pattern[n * 64 + half * 4 + chan]);
@@ -1175,17 +1176,23 @@ function fmt_mod_load_song(song, fp, force) {
 
 export const LOAD_SUCCESS = 1, LOAD_UNSUPPORTED = 2, LOAD_FORMAT_ERROR = 3, LOAD_FILE_ERROR = 4;
 
-const load_song_funcs = [fmt_it_load_song, fmt_xm_load_song, fmt_s3m_load_song,
-	(s, f) => fmt_mod_load_song(s, f, 0), (s, f) => fmt_mod_load_song(s, f, 1)];
+// filled in by loaders2.js (the other formats); order as in include/fmt-types.h
+export const song_loaders = {
+	mod31: (s, f) => fmt_mod_load_song(s, f, 0), s3m: fmt_s3m_load_song, xm: fmt_xm_load_song,
+	it: fmt_it_load_song, mod15: (s, f) => fmt_mod_load_song(s, f, 1),
+};
+const LOAD_ORDER = ['669', 'mod31', 's3m', 'far', 'xm', 'it', 'mtm', 'mdl', 'okt', 'mid', 'mus', 'psm',
+	'psm16', 'dsm', 'd00', 'ult', 'imf', 'sfx', 'stx', 'stm', 'mod15'];
 
 export function song_create_load(data, template) {
 	const fp = fp_open(data);
-	for (const func of load_song_funcs) {
+	for (const func of LOAD_ORDER.map(k => song_loaders[k]).filter(Boolean)) {
 		const newsong = csf_allocate();
 		if (template) {
 			newsong.mix_flags = template.mix_flags;
 			newsong.row_highlight_major = template.row_highlight_major;
 			newsong.row_highlight_minor = template.row_highlight_minor;
+			if (template.midi_config) newsong.midi_config = copy_midi_config(template.midi_config);
 		}
 		fp.position = 0; fp.limit = Infinity;
 		let r;
@@ -1204,4 +1211,5 @@ export function song_create_load(data, template) {
 	}
 	return null;
 }
+export const fpio = { getc, eof, u8, s8, u16, u16be, u32, bytes, cstr, rtrim, seek, tell, clamp };
 provide({ song_create_load, csf_import_mod_effect });

@@ -10,7 +10,7 @@ export const NATIVE_SCREEN_HEIGHT = 400;
 let canvas = null, ctx = null, image = null, pixels = null;
 
 // palette index -> packed pixel. 256 entries because overlay bytes index it
-// directly; like the C code, only the first 16 are real colours.
+// directly: 0-15 are the palette, 128-255 the waterfall gradient.
 const tc = new Uint32Array(256);
 const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
 
@@ -32,7 +32,16 @@ export function video_colors(colors) {
 			: ((r << 24) | (g << 16) | (b << 8) | 0xFF) >>> 0;
 	}
 	// overlay bytes above 15 only occur OR-ed with the mouse cursor (|15)
-	for (let i = 16; i < 256; i++) tc[i] = tc[i & 15];
+	for (let i = 16; i < 128; i++) tc[i] = tc[i & 15];
+	// the "gradient" space, used only by the waterfall page (video_colors_iterate)
+	const lastmap = [0, 1, 2, 3, 5];
+	for (let i = 0; i < 128; i++) {
+		const p = lastmap[i >> 5];
+		const [r, g, b] = [0, 1, 2].map(j => colors[p][j] + Math.trunc((colors[p + 1][j] - colors[p][j]) * (i & 0x1f) / 0x20));
+		tc[128 + i] = LITTLE_ENDIAN
+			? ((0xFF << 24) | (b << 16) | (g << 8) | r) >>> 0
+			: ((r << 24) | (g << 16) | (b << 8) | 0xFF) >>> 0;
+	}
 }
 
 export function video_blit() {

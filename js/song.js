@@ -17,18 +17,16 @@ import { csf_allocate, csf_allocate_pattern, csf_allocate_instrument, csf_init_i
 	csf_get_length, csf_stop_sample, csf_destroy_sample, csf_adjust_sample_loop,
 	csf_update_playing_sample, csf_get_num_patterns } from './csndfile.js';
 import { song_create_load } from './fmt/loaders.js';
+import './fmt/loaders2.js';
+import './snd_fm.js';
+import { schism_midi_out_raw, song_stop_midi, song_reset_midi_state, midi_set_latency_source } from './midi.js';
+import { tracker, MIDI_LIKE_TRACKER, PAGE, VIS_FFT } from './state.js';
 
 export const MODE_STOPPED = 0, MODE_PLAYING = 1, MODE_PATTERN_LOOP = 2, MODE_SINGLE_STEP = 4;
 export const KEYJAZZ_CHAN_CURRENT = 0, KEYJAZZ_CHAN_AUTO = -1, KEYJAZZ_NOINST = -1,
 	KEYJAZZ_DEFAULTVOL = -1, KEYJAZZ_INST_FAKE = -2;
 export const KEEP_PATTERNS = 1, KEEP_SAMPLES = 2, KEEP_INSTRUMENTS = 4, KEEP_ORDERLIST = 8;
 
-// MIDI / OPL / GM transports are not ported; they are silent no-ops here.
-const noop = () => 0;
-provide({ csf_midi_out_note: noop, GM_KeyOff: noop, GM_Touch: noop, GM_IncrementSongCounter: noop,
-	Fmdrv_Mix: noop, Fmdrv_Init: noop, GM_Reset: noop, OPL_NoteOff: noop, OPL_Patch: noop,
-	OPL_Reset: noop, GM_DPatch: noop, GM_SendSongStartCode: noop, GM_SendSongStopCode: noop,
-	csf_process_midi_macro: noop, csf_midi_send: noop });
 
 export let current_song = null;
 export let song_filename = '', song_basename = '';
@@ -103,6 +101,7 @@ export async function audio_init() {
 }
 export function audio_is_running() { return !!(ctx && ctx.state === 'running'); }
 export function audio_sample_rate() { return mix_rate; }
+midi_set_latency_source(() => mix_rate ? Math.max(0, produced - played) * 1000 / mix_rate : 0);
 
 function target_frames() {
 	const base = Math.max(audio_settings.buffer_size, 512);
@@ -160,6 +159,7 @@ function audio_callback(out) {
 	const scale = 1 / 2147483648;
 	for (let i = 0; i < n * 2; i++) out[i] = pcm32[i] * scale;
 	for (let i = 0; i < n * 2; i++) vis_buffer[(vis_pos + i) % vis_buffer.length] = pcm32[i] >> 16;
+	if (status.current_page === PAGE.WATERFALL || status.vis_style === VIS_FFT) optional('vis_work', pcm32, n, 2);
 	vis_pos = (vis_pos + n * 2) % vis_buffer.length;
 	for (let i = n * 2; i < out.length; i++) out[i] = 0;
 	if (song.num_voices > max_channels_used) max_channels_used = Math.min(song.num_voices, song.max_voices);
@@ -194,6 +194,7 @@ export function song_init_modplug() {
 	if (audio_settings.no_ramping) current_song.mix_flags |= C.SNDMIX_NORAMPING;
 	else current_song.mix_flags &= ~C.SNDMIX_NORAMPING;
 	song_set_surround(audio_settings.surround_effect);
+	current_song.midi_out_raw = schism_midi_out_raw; // csf_init_midi
 }
 
 export function blank_sample(s) {
@@ -345,6 +346,10 @@ function song_keydown_ex(samp, ins, note, vol, chan, effect, param) {
 			if (i.flags & C.ENV_PANNING) c.flags |= C.CHN_PANENV;
 			if (i.flags & C.ENV_PITCH) c.flags |= C.CHN_PITCHENV;
 			i.played = 1;
+			if ((status.flags & MIDI_LIKE_TRACKER) && i.midi_channel_mask) {
+				app.GM_KeyOff(song, ci);
+				app.GM_DPatch(song, ci, i.midi_program, i.midi_bank, i.midi_channel_mask);
+			}
 			if (i.ifc & 0x80) c.cutoff = i.ifc & 0x7f;
 			if (i.ifr & 0x80) c.resonance = i.ifr & 0x7f;
 			c.vol_swing = i.vol_swing; c.pan_swing = i.pan_swing; c.nna = i.nna;
@@ -372,7 +377,11 @@ function song_keydown_ex(samp, ins, note, vol, chan, effect, param) {
 	}
 	if (c.increment && c.increment.v < 0n) c.increment = { v: -c.increment.v };
 	app.csf_note_change(song, ci, note, 0, 0, 1);
-	void midi_note;
+	if (!(status.flags & MIDI_LIKE_TRACKER) && i) {
+		/* midi keyjazz shouldn't require a sample */
+		app.csf_midi_out_note(song, ci, { note: note ? note : midi_note, instrument: ins, voleffect: C.VOLFX_VOLUME,
+			volparam: vol, effect, param });
+	}
 	if (song.flags & C.SONG_ENDREACHED) {
 		song.flags &= ~C.SONG_ENDREACHED;
 		song.flags |= C.SONG_PAUSED;
@@ -443,8 +452,14 @@ export function song_pause() {
 	mode_changed();
 }
 export function song_stop() { song_stop_unlocked(0); mode_changed(); }
-export function song_stop_unlocked() {
+export function song_stop_unlocked(quitting = 0) {
 	if (!current_song) return;
+	song_stop_midi(current_song);
+	app.OPL_Reset(current_song); /* Also stop all OPL sounds */
+	app.GM_Reset(current_song, quitting);
+	app.GM_SendSongStopCode(current_song);
+	song_reset_midi_state(current_song);
+	tracker.playback_tracing = tracker.midi_playback_tracing;
 	song_reset_play_state();
 	current_song.flags |= C.SONG_PAUSED | C.SONG_ENDREACHED;
 	current_song.vu_left = current_song.vu_right = 0;

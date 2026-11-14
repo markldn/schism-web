@@ -27,6 +27,7 @@ export function cfg_save(quiet) {
 		classic: status.flags & CLASSIC_MODE ? 1 : 0, midi_like_tracker: status.flags & MIDI_LIKE_TRACKER ? 1 : 0,
 		flats: kbd_sharp_flat_state() === KBD_SHARP_FLAT_FLATS ? 1 : 0, octave: kbd_get_current_octave(),
 		palette: current_palette.map(c => c.slice()), palette_index: current_palette_index, video: { ...video }, dirs: { ...dirs },
+		midi: optional('cfg_get_midi'),
 	};
 	try { localStorage.setItem('schism-config', JSON.stringify(data)); if (!quiet) flash('Configuration saved'); }
 	catch { flash('Could not save configuration (browser storage blocked)'); }

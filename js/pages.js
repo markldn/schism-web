@@ -11,6 +11,8 @@ import './page_message.js';
 import './page_config.js';
 import './page_palette.js';
 import './page_timeinfo.js';
+import './page_midi.js';
+import './page_waterfall.js';
 import { dmoz_init } from './dmoz.js';
 import { optional } from './app.js';
 import { status, PAGE } from './state.js';

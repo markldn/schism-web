@@ -10,7 +10,7 @@
 import { status, tracker, PAGE, HELP, NEED_UPDATE, INVERTED_PALETTE, CLASSIC_MODE, SONG_NEEDS_SAVE,
 	DIALOG_MENU, DIALOG_BOX, DIALOG_NONE } from "./state.js";
 import { draw_char, draw_text, draw_text_len, draw_text_bios_len, draw_fill_chars, draw_box, draw_vu_meter,
-	vgamem_ovl_alloc, vgamem_ovl_clear, vgamem_ovl_apply, draw_sample_data_rect,
+	vgamem_ovl_alloc, vgamem_ovl_clear, vgamem_ovl_apply, vgamem_ovl_drawline, draw_sample_data_rect,
 	DEFAULT_FG, BOX_THIN, BOX_INNER, BOX_INSET } from "./vgamem.js";
 import { KEYSYM, KEYMOD, KEY_PRESS, KEY_RELEASE, NO_MODIFIER, MOUSE_NONE, MOUSE_CLICK, MOUSE_DBLCLICK,
 	kbd_get_current_octave, kbd_set_current_octave } from "./keyboard.js";
@@ -328,10 +328,22 @@ function draw_vis() {
 	if (status.flags & CLASSIC_MODE) { draw_text("FreeMem 640k", 63, 6, 0, 2); draw_text("FreeEMS 65536k", 63, 7, 0, 2); return; }
 	switch (status.vis_style) {
 	case 1: draw_text("   Song    0k", 63, 6, 0, 2); draw_text("Samples    0k", 63, 7, 0, 2); break;
-	case 2: case 4: case 5: {
+	case 2: case 4: {
 		draw_vis_box();
 		const buf = app.song_get_vis_buffer();
 		draw_sample_data_rect(vis_overlay, buf, 16, buf.length, 2, status.vis_style === 4 ? 1 : 2);
+		break;
+	}
+	case 5: { // vis_fft
+		draw_vis_box();
+		vgamem_ovl_clear(vis_overlay, 0);
+		const outfft = new Uint8Array(120);
+		optional('fft_get_columns', 120, outfft, 0);
+		for (let i = 0; i < 120; i++) {
+			const y = Math.min(outfft[i] >> 3, 15);
+			if (y > 0) vgamem_ovl_drawline(vis_overlay, i, 15 - y, i, 15, 5);
+		}
+		vgamem_ovl_apply(vis_overlay);
 		break;
 	}
 	case 3: {
@@ -918,7 +930,7 @@ function handle_key_global(k) {
 		if (alt) {
 			if (pressed) app.midi_toggle_record(); // flashes "MIDI Input Disabled/Enabled"
 		} else if (pressed) {
-			tracker.playback_tracing = tracker.playback_tracing ? 0 : 1;
+			tracker.midi_playback_tracing = tracker.playback_tracing = tracker.playback_tracing ? 0 : 1;
 			status_text_flash("Playback tracing " + (tracker.playback_tracing ? "enabled" : "disabled"));
 		}
 		return 1;
