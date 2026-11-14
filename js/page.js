@@ -20,7 +20,6 @@ import { ui_set, widget_draw_widget, widget_handle_key, widget_handle_text_input
 	widget_togglebutton_set, active_widget, ui } from "./widget.js";
 import { dialog_draw, dialog_create, dialog_create_custom, dialog_destroy_all, dialog_handle_key,
 	dialog_yes_NULL, dialog_cancel_NULL } from "./dialog.js";
-import { font_reset } from "./vgamem.js";
 import { VIS_SENTINEL, DISKWRITER_ACTIVE, STARTUP_FONTEDIT, DIALOG_OK, DIALOG_OK_CANCEL } from "./state.js";
 import { menu_draw, menu_show, menu_hide, menu_handle_key } from "./menu.js";
 import { app, provide, is_ported, optional } from "./app.js";
@@ -658,7 +657,7 @@ function handle_key_global(k) {
 		/* This should reset everything display-related. */
 		if (ctrl) {
 			if (!pressed) return 1;
-			font_reset(); // TODO(port): font_init() also reloads the configured font file
+			app.font_init();
 			status.flags |= NEED_UPDATE;
 			return 1;
 		}

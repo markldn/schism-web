@@ -4,6 +4,7 @@
 import { status, PAGE, NEED_UPDATE, DIALOG_NONE } from "./state.js";
 import { slurp_unpack } from './fmt/mmcmp.js';
 import { clipboard_paste } from './clippy.js';
+import { font_load_data } from './fonts.js';
 import { vgamem_flip } from "./vgamem.js";
 import { video_init, video_blit } from "./video.js";
 import { palette_apply } from "./palettes.js";
@@ -34,8 +35,15 @@ window.addEventListener("pointerdown", start_audio, { once: true, capture: true 
 // Files: drag and drop anywhere loads a module (or a sample/instrument on those pages).
 export async function load_file_object(file) {
 	const raw = new Uint8Array(await file.arrayBuffer());
-	optional("store_add_file", file.name, raw);
 	const data = (await slurp_unpack(raw)) || raw;
+	if (status.current_page === PAGE.FONT_EDIT) {
+		if (font_load_data(data) === 0) {
+			app.dmoz_write_file('/Fonts/' + file.name, data);
+			app.fontedit_refresh_list();
+		} else app.status_text_flash('Invalid font: ' + file.name);
+		return;
+	}
+	optional("store_add_file", file.name, raw);
 	if (app.handle_dropped_file && app.handle_dropped_file(file.name, data)) return;
 	if (song_load_data(file.name, data)) set_page(PAGE.PATTERN_EDITOR);
 	else app.status_text_flash("Could not load " + file.name);
@@ -56,7 +64,7 @@ function on_key(e, state) {
 	// Let the browser deliver a trusted paste event, including on browsers
 	// that do not expose navigator.clipboard.readText().
 	if (!e.altKey && (((e.ctrlKey || e.metaKey) && e.code === 'KeyV')
-		|| (e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'Insert'))) return;
+		|| (status.current_page !== PAGE.FONT_EDIT && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'Insert'))) return;
 	const k = key_event_from_dom(e, state);
 	if (!k) return;
 

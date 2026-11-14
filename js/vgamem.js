@@ -30,7 +30,7 @@ export const font_normal = new Uint8Array(2048);
 export const font_half_data = new Uint8Array(1024);
 font_half_data.set(FONTS.half_width);
 
-function make_half_width_middot() {
+export function make_half_width_middot() {
 	for (let i = 0; i < 4; i++) {
 		font_half_data[173 * 4 + i] =
 			(font_normal[184 * 8 + i * 2] & 0xf0) | ((font_normal[184 * 8 + i * 2 + 1] & 0xf0) >> 4);
@@ -48,6 +48,18 @@ export function font_reset() {
 export function font_reset_bios() {
 	font_normal.set(FONTS.default_lower, 0);
 	font_normal.set(FONTS.default_upper_alt, 1024);
+	make_half_width_middot();
+}
+
+export function font_reset_upper() {
+	font_normal.set(FONTS.default_upper_itf, 1024);
+	make_half_width_middot();
+}
+
+export function font_reset_char(ch) {
+	const base = ch < 128 ? FONTS.default_lower : FONTS.default_upper_itf;
+	const offset = (ch & 127) * 8;
+	font_normal.set(base.subarray(offset, offset + 8), ch * 8);
 	make_half_width_middot();
 }
 

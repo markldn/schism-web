@@ -74,10 +74,10 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | schism/dmoz.c | 2409 | replaced | js/dmoz.js: IndexedDB virtual disk, import/download |
 | schism/events.c | 214 | replaced | DOM events in js/main.js + js/keyboard.js |
 | schism/fakemem.c | 139 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
-| schism/fonts.c | 252 | partial | font reset in js/vgamem.js; loading .itf files from disk not ported |
+| schism/fonts.c | 252 | ported | js/fonts.js + vgamem.js: ITF/raw 8x8/8x16 loading, ITF save/download, persistent font.cfg, full/upper/BIOS/glyph resets |
 | schism/ieee-float.c | 763 | todo |  |
 | schism/isysev.c | 1375 | todo |  |
-| schism/itf.c | 1121 | todo |  |
+| schism/itf.c | 1121 | ported | js/itf.js: full editor, character map, preview, virtual font list/import/save; four editing/navigation screens match C pixel-for-pixel |
 | schism/keyboard.c | 685 | ported | js/keyboard.js; key repeat left to the browser |
 | schism/loadso.c | 302 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/main.c | 1444 | replaced | js/main.js (event loop) |

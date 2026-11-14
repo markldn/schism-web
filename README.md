@@ -22,6 +22,11 @@ Paste patterns from Schism/OpenMPT with Ctrl-V or Shift-Insert; Alt-O/P/M
 provide overwrite, insert and mix modes. Text fields and song messages also
 accept paste. Browser clipboard permission is needed for the Alt shortcuts;
 they fall back to the internal clipboard when access is unavailable.
+
+Open the font editor with Shift-F12. Use F9 to import/load ITF or raw FNT
+fonts (8x8 and 8x16), or drop a font onto the editor. F10 then Enter saves
+and downloads `font.cfg`, which becomes the default on reload. Ctrl-Q returns
+to the tracker; the editor shows its drawing and transformation shortcuts.
 See PROGRESS.md for what works and what doesn't, PORTING.md per C file.
 
     python3 test/parity.py     # pixel-compare against the original (needs ../schism-web/dist)

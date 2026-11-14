@@ -57,6 +57,10 @@ CASES = [
     ("help", ["F1"], [BODY]),
     ("config", ["Control+F1"], [("config", 0, 10, 79, 26)]),
     ("pattern-options", ["F2"], [("dialog", 10, 18, 69, 43)]),
+    ("font-editor", ["Shift+F12"], [("font editor", 0, 0, 79, 45)]),
+    ("font-charmap", ["Shift+F12", "F3", "ArrowRight", "ArrowDown"], [("font editor", 0, 0, 79, 45)]),
+    ("font-preview", ["Shift+F12", "F4", "Home", "ArrowRight"], [("font editor", 0, 0, 79, 45)]),
+    ("font-edit", ["Shift+F12", "Alt+z", "Home", "Space", "Shift+ArrowRight", "BracketRight", "Alt+i"], [("font editor", 0, 0, 79, 45)]),
 ]
 
 def serve(directory, port):
@@ -88,7 +92,9 @@ def main():
             only = [a for a in sys.argv[2:]]
             for name, keys, regions in CASES:
                 if only and name not in only: continue
-                js.goto("http://127.0.0.1:8778/"); js.wait_for_timeout(600)
+                js.goto("http://127.0.0.1:8778/")
+                js.wait_for_function("window.schism && document.getElementById('screen').width === 640")
+                js.wait_for_timeout(100)
                 js.keyboard.press("Enter"); js.wait_for_timeout(150)     # dismiss the About box
                 js.keyboard.press("F2"); js.wait_for_timeout(150)
                 ref.goto("http://127.0.0.1:8779/"); ref.wait_for_timeout(2500)

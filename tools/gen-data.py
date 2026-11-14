@@ -4,7 +4,7 @@
 Usage: tools/gen-data.py [path-to-schismtracker]   (default ../schismtracker)
 Writes js/gen/*.js. Data only; behaviour is hand-ported in js/*.js.
 """
-import base64, json, re, sys
+import ast, base64, json, re, sys
 from pathlib import Path
 
 SRC = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent.parent / "schismtracker")
@@ -62,6 +62,18 @@ fonts = {p.stem.replace("-", "_"): base64.b64encode(p.read_bytes()).decode() for
     "const b64 = " + json.dumps(fonts) + ";\n"
     "const dec = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));\n"
     "export const FONTS = Object.fromEntries(Object.entries(b64).map(([k, v]) => [k, dec(v)]));\n")
+
+# ---- font editor map and help strings -----------------------------------------
+itf = (SRC / 'schism/itf.c').read_text()
+body = re.search(r'itfmap_chars\[\]\s*=\s*\{(.*?)\};', itf, re.S).group(1)
+chars = [ord(ast.literal_eval(v.strip())) if v.strip().startswith("'") else int(v.strip())
+         for v in body.split(',') if v.strip()]
+assert len(chars) == 240
+exports = ['export const itfmap_chars = ' + json.dumps(chars) + ';\n']
+for name, body in re.findall(r'static const uint8_t (helptext_\w+)\[\]\s*=\s*(.*?);', itf, re.S):
+    value = ''.join(ast.literal_eval(s) for s in re.findall(r'"(?:\\.|[^"\\])*"', body))
+    exports.append('export const ' + name + ' = ' + json.dumps(value) + ';\n')
+(OUT / 'itf.js').write_text(HDR + ''.join(exports))
 
 # ---- help text (same order as the enum in page.h / Makefile.am) ----------------
 mk = (SRC / "Makefile.am").read_text()

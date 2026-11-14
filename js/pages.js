@@ -13,7 +13,12 @@ import './page_palette.js';
 import './page_timeinfo.js';
 import './page_midi.js';
 import './page_waterfall.js';
+import './itf.js';
+import { font_init } from './fonts.js';
 import { dmoz_init } from './dmoz.js';
 import { optional } from './app.js';
 import { status, PAGE } from './state.js';
-dmoz_init().then(() => { if (status.current_page === PAGE.LOAD_MODULE) optional('refresh_module_list'); });
+dmoz_init().then(() => {
+	font_init();
+	if (status.current_page === PAGE.LOAD_MODULE) optional('refresh_module_list');
+});

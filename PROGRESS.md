@@ -32,6 +32,7 @@ save is also downloaded.
 | UI shell | menus, dialogs, all widgets, global keys, top bar, status line, clock, oscilloscope/VU/spectrum visualiser |
 | Settings | saved to localStorage ("Save all Preferences" on F12, or Save on Shift-F5 / palette changes) |
 | Clipboard | ModPlug IT/S3M/XM/MOD pattern text import; Ctrl-V / Shift-Insert paste into patterns, text fields and song messages; Alt-O/P/M read the system clipboard with internal fallback when access is unavailable |
+| Fonts | Shift-F12 font editor: pixel/row/column drawing, mouse drag/erase, shifts, rotation, flips, glyph copy/paste/mix, invert, resets and palette shortcuts; load ITF/raw 8x8 or 8x16 via F9 import or drop; F10 saves/downloads ITF, and saving font.cfg persists the default |
 
 ## Checks
 
@@ -44,6 +45,7 @@ save is also downloaded.
 | `node test/render.mjs in out.wav [secs]` | renders a module with the JS player (used to compare against libopenmpt) |
 | `python3 test/smoke.py outdir module keys...` | drives the page in headless Chrome and takes screenshots |
 | `python3 test/clipboard.py` | real browser clipboard copy/paste, Alt paste modes, undo, malformed input, bounds, text/message fields, dialog isolation and pending-read cancellation (serve repository on :8778 first) |
+| `python3 test/fonts.py` | font editing and mouse operations, file format validation/conversion, real import/download, virtual-disk and default persistence, dialog isolation (starts a temporary server) |
 | the original `test/*.py` / `test/*.mjs` | table, pitch, slide, filter, PCM and kernel parity against compiled C |
 
 Measured 2026-11-14: 74 modules across all supported formats render identical
@@ -67,7 +69,6 @@ arbitrary IT songs. The IT resaved file also differs in bytes despite identical 
 - [ ] Instrument formats PAT (GUS) and SF2; FLAC saving (no encoder in the browser)
 - [ ] bzip2 / xz / zstd packed modules (gzip and MMCMP work)
 - [ ] A few files differ from the C build by one LSB in one sample every few minutes (cause not found)
-- [ ] Font editor (itf.c)
 - [ ] Text synth (Alt-Y in the sample list), sample editor drag-selection
 - [ ] Digraph / Alt-numpad / Unicode text entry (charset.c)
 - [ ] Info page window layout and pattern editor options are not saved between sessions
