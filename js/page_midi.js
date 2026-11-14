@@ -6,14 +6,15 @@ import { status, PAGE, HELP, NEED_UPDATE, MIDI_EVENT_CHANGED } from './state.js'
 import { draw_text, draw_char, draw_box, draw_fill_chars, draw_text_utf8_len, DEFAULT_FG,
 	BOX_THIN, BOX_INNER, BOX_INSET } from './vgamem.js';
 import { widget_create_toggle, widget_create_thumbbar, widget_create_button, widget_create_other,
-	widget_create_textentry, widget_change_focus_to, active_widget, ui, MOUSE_SCROLL_LINES, WIDGET_OTHER } from './widget.js';
+	widget_create_textentry, widget_create_numentry, widget_change_focus_to, active_widget, ui, MOUSE_SCROLL_LINES, WIDGET_OTHER } from './widget.js';
 import { KEYSYM, KEY_PRESS, KEY_RELEASE, MOUSE_SCROLL_UP, MOUSE_SCROLL_DOWN, MOUSE_DBLCLICK, hexdigits } from './keyboard.js';
 import { pages } from './page.js';
 import { current_song } from './song.js';
 import { midi, MIDI_TICK_QUANTIZE, MIDI_BASE_PROGRAM1, MIDI_RECORD_NOTEOFF, MIDI_RECORD_VELOCITY,
 	MIDI_RECORD_AFTERTOUCH, MIDI_CUT_NOTE_OFF, MIDI_PITCHBEND, MIDI_INPUT, MIDI_OUTPUT,
 	midi_engine_poll_ports, midi_engine_port, midi_engine_port_count, midi_engine_error,
-	midi_port_enable, midi_port_disable } from './midi.js';
+	midi_port_enable, midi_port_disable, CC_OFF } from './midi.js';
+import { dialog_create_custom, dialog_yes_NULL } from './dialog.js';
 import { copy_midi_config, midi_config_defaults } from './midimacro.js';
 import * as C from './sndconst.js';
 
@@ -185,6 +186,42 @@ function midi_page_draw_portlist() {
 	}
 }
 
+// Extension: MIDI CC mapping dialog (incoming controllers -> SFx/Zxx macros; see midi.js)
+function cc_mapping_dialog() {
+	const cur = { value: 0 };
+	const set = () => {
+		for (let n = 0; n < 16; n++) midi.cc_map[n] = w[n].d.value;
+		midi.cc_res = w[16].d.value;
+		status.flags |= NEED_UPDATE;
+	};
+	const w = [];
+	for (let n = 0; n < 16; n++) {
+		const col = n >> 3, row = n & 7, x = col ? 54 : 29;
+		const up = row ? n - 1 : n, down = row < 7 ? n + 1 : 16, tab = col ? (n === 15 ? 16 : n - 7) : n + 8;
+		w.push(widget_create_numentry(x, 19 + row, 3, up, down, tab, set, 0, 128, cur));
+		w[n].d.value = midi.cc_map[n];
+	}
+	w.push(widget_create_numentry(30, 28, 3, 7, 17, 17, set, 0, 128, cur));
+	w[16].d.value = midi.cc_res;
+	w.push(widget_create_button(36, 36, 6, 16, 17, 17, 17, 0, dialog_yes_NULL, 'OK', 3));
+	const draw = () => {
+		draw_text('MIDI CC Mapping', 32, 16, 3, 2);
+		for (let n = 0; n < 16; n++) {
+			const col = n >> 3, row = n & 7, x = col ? 41 : 16;
+			draw_text(`SF${n.toString(16).toUpperCase()} <- CC`, x, 19 + row, 0, 2);
+			draw_text(w[n].d.value === CC_OFF ? 'off' : '   ', x + 17, 19 + row, 0, 2);
+		}
+		draw_text('Z80-Z8F <- CC', 16, 28, 0, 2);
+		draw_text(w[16].d.value === CC_OFF ? 'off' : '   ', 34, 28, 0, 2);
+		draw_text('A CC value 0-127 becomes Z00-Z7F of macro SFx;', 16, 30, 0, 2);
+		draw_text('the Z80-Z8F CC picks one of 16 steps. 128 = off.', 16, 31, 0, 2);
+		draw_text('Plays on the last MIDI note\'s channel; in the', 16, 32, 0, 2);
+		draw_text('pattern editor it is also written as SFx / Zxx.', 16, 33, 0, 2);
+	};
+	const d = dialog_create_custom(12, 14, 56, 26, w, 18, 0, draw, null);
+	d.action_yes = () => optional('cfg_save', true);
+}
+
 wm[0] = widget_create_other(0, midi_page_handle_key, null, midi_page_draw_portlist);
 Object.assign(wm[0], { x: 2, y: 14, width: 75, height: 15 });
 wm[1] = widget_create_toggle(20, 30, 0, 2, 7, 7, 7, update_midi_values);
@@ -198,12 +235,13 @@ wm[8] = widget_create_thumbbar(53, 31, 20, 7, 9, 2, update_midi_values, 0, 127);
 wm[9] = widget_create_toggle(53, 34, 8, 10, 5, 5, 5, update_midi_values);
 wm[10] = widget_create_thumbbar(53, 35, 20, 9, 11, 6, update_midi_values, 0, 48);
 wm[11] = widget_create_toggle(53, 38, 10, 12, 13, 13, 13, update_midi_values);
-wm[12] = widget_create_thumbbar(53, 41, 20, 11, 12, 13, update_ip_ports, 0, 128);
+wm[12] = widget_create_thumbbar(53, 41, 20, 11, 15, 13, update_ip_ports, 0, 128);
 wm[13] = widget_create_button(2, 41, 27, 6, 14, 12, 12, 12, () => app.set_page(PAGE.MIDI_OUTPUT), 'MIDI Output Configuration', 2);
-wm[14] = widget_create_button(2, 44, 27, 13, 14, 12, 12, 12, () => optional('cfg_save'), 'Save Output Configuration', 2);
+wm[14] = widget_create_button(2, 44, 27, 13, 14, 15, 15, 15, () => optional('cfg_save'), 'Save Output Configuration', 2);
+wm[15] = widget_create_button(53, 44, 20, 12, 15, 14, 14, 14, cc_mapping_dialog, 'MIDI CC Mapping', 2);
 
 Object.assign(pages[PAGE.MIDI], { title: 'MIDI Screen (Shift-F1)', draw_const: midi_page_redraw, set_page: get_midi_config,
-	total_widgets: 15, widgets: wm, help_index: HELP.GLOBAL, ported: true });
+	total_widgets: 16, widgets: wm, help_index: HELP.GLOBAL, ported: true });
 
 // ------------------------------------------------------------------------
 // page_midiout.c

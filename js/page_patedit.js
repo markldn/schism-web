@@ -5,7 +5,7 @@ import { pattern_selection_system_paste_modplug } from './pattern-clipboard.js';
 import { app, provide } from './app.js';
 import * as C from './sndconst.js';
 import { status, tracker, PAGE, HELP, NEED_UPDATE, SONG_NEEDS_SAVE, CLASSIC_MODE, CRAYOLA_MODE,
-	INVERTED_PALETTE, DIALOG_OK, DIALOG_OK_CANCEL } from './state.js';
+	INVERTED_PALETTE, DIALOG_OK, DIALOG_OK_CANCEL, DIALOG_NONE } from './state.js';
 import { draw_text, draw_text_len, draw_char, draw_box, BOX_THIN, BOX_THICK, BOX_INNER, BOX_INSET } from './vgamem.js';
 import { KEYSYM, KEYMOD, SCANCODE, KEY_PRESS, KEY_RELEASE, KEY_DRAG, NO_MODIFIER, MOUSE_NONE, MOUSE_CLICK,
 	MOUSE_DBLCLICK, MOUSE_SCROLL_UP, MOUSE_SCROLL_DOWN, numeric_key_event, kbd_get_note, kbd_char_to_hex,
@@ -24,7 +24,7 @@ import { current_song, song_get_pattern, song_get_pattern_buf, song_get_mode, MO
 	song_handle_channel_solo, song_find_last_channel, song_set_current_order, song_get_current_order,
 	song_get_current_row, song_get_playing_pattern, KEYJAZZ_NOINST, KEYJAZZ_DEFAULTVOL,
 	song_get_current_speed, song_get_current_tick, song_get_pattern_offset } from './song.js';
-import { midi, MIDI_TICK_QUANTIZE, MIDI_RECORD_NOTEOFF, MIDI_RECORD_VELOCITY, MIDI_PITCHBEND } from './midi.js';
+import { midi, MIDI_TICK_QUANTIZE, MIDI_RECORD_NOTEOFF, MIDI_RECORD_VELOCITY, MIDI_PITCHBEND, midi_cc_apply } from './midi.js';
 import { csf_get_num_patterns } from './csndfile.js';
 import { disko_writeout_sample, disko_multiwrite_samples } from './fmt/savers.js';
 
@@ -1144,6 +1144,42 @@ function patedit_record_note(cur_note, channel, row, note, force) {
 
 // page_patedit.c: pattern_editor_insert_midi
 let midi_start_record = 0;
+let midi_cc_channel = 0, midi_cc_cursor = 0; // channel of the last MIDI note (while the cursor stays put)
+
+// Extension: incoming MIDI CC (see midi.js cc_map). Plays at once on the channel of
+// the last MIDI note (or the cursor channel) and is written into its effect column:
+// following playback at the playing row, otherwise at the cursor. A CC mapped to SFn
+// writes SFn first when the channel has another macro selected, then Zxx; existing
+// non-macro effects are never overwritten.
+function pattern_editor_midi_cc(t) {
+	if (status.current_page !== PAGE.PATTERN_EDITOR || status.dialog_type !== DIALOG_NONE) return 0;
+	const c = midi_cc_channel && midi_cc_cursor === current_channel ? midi_cc_channel : current_channel;
+	const chan = current_song.voices[c - 1];
+	const selected_before = chan ? chan.active_macro & 15 : 0;
+	midi_cc_apply(current_song, c, t);
+	const off = song_get_pattern_offset(current_pattern, current_row, 0);
+	if (!off[0]) return 1;
+	const pat = song_get_pattern_buf(off[1]), r = off[2];
+	if (!pat) return 1;
+	const cell = pat[MAX_CHANNELS * r + (c - 1)];
+	const is_sf = n => n.effect === C.FX_SPECIAL && (n.param >> 4) === 0xf;
+	if (cell.effect && cell.effect !== C.FX_MIDI && !is_sf(cell)) return 1;
+	if (t.macro >= 0) {
+		// which macro does the pattern select at this row? the nearest SFx above, else what played
+		let selected = selected_before;
+		for (let i = r - 1; i >= 0; i--) {
+			const n = pat[MAX_CHANNELS * i + (c - 1)];
+			if (is_sf(n)) { selected = n.param & 15; break; }
+		}
+		if (is_sf(cell) && (cell.param & 15) === t.macro) return 1; // keep the selector; the value goes on the next row
+		if (selected !== t.macro) { cell.effect = C.FX_SPECIAL; cell.param = 0xf0 | t.macro; }
+		else { cell.effect = C.FX_MIDI; cell.param = t.z; }
+	} else {
+		cell.effect = C.FX_MIDI; cell.param = t.z;
+	}
+	status.flags |= SONG_NEEDS_SAVE | NEED_UPDATE;
+	return 1;
+}
 export const midi_last_bend_hit = new Int32Array(MAX_CHANNELS);
 function pattern_editor_insert_midi(k) {
 	let cur_note = null, n, v = 0, pd, offset = 0, quantize_next_row = 0;
@@ -1184,6 +1220,7 @@ function pattern_editor_insert_midi(k) {
 		if (!((song_get_mode() & (MODE_PLAYING | MODE_PATTERN_LOOP)) && tracker.playback_tracing)) tick = 0;
 		n = k.midi_note;
 		if (!quantize_next_row) c = song_keydown(smp, ins, n, v, c);
+		midi_cc_channel = c; midi_cc_cursor = current_channel;
 		cur_note = pattern[MAX_CHANNELS * r + (c - 1)];
 		patedit_record_note(cur_note, c, r, n, 0);
 		if (!template_mode) {
@@ -2031,6 +2068,6 @@ export function cfg_load_patedit(c) {
 
 pattern_editor_load_page(pages[PAGE.PATTERN_EDITOR]);
 
-provide({ cfg_save_patedit, cfg_load_patedit, song_pattern_to_sample, pattern_editor_display_options, pattern_editor_length_edit, update_current_row, get_current_channel,
+provide({ pattern_editor_midi_cc, cfg_save_patedit, cfg_load_patedit, song_pattern_to_sample, pattern_editor_display_options, pattern_editor_length_edit, update_current_row, get_current_channel,
 	set_current_channel, get_current_row, set_current_row, update_current_pattern, get_current_pattern,
 	set_current_pattern, play_song_from_mark, play_song_from_mark_orderpan, pattern_editor_reposition });

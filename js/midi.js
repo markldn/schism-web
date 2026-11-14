@@ -21,7 +21,13 @@ const MAX_MIDI_CHANNELS = 16, MAX_VOICES = 256, MAX_CHANNELS = 64;
 export const midi = {
 	flags: MIDI_TICK_QUANTIZE | MIDI_RECORD_NOTEOFF | MIDI_RECORD_VELOCITY | MIDI_RECORD_AFTERTOUCH | MIDI_PITCHBEND,
 	pitch_depth: 12, amplification: 100, c5note: 60,
+	// Extension (upstream ignores incoming controllers): CC -> macro mapping.
+	// cc_map[n] is the controller number driving parametered macro SFn (its value 0..127 becomes
+	// Z00..Z7F); cc_res drives the fixed macros Z80..Z8F (IT's default resonance steps).
+	// 128 = off. Defaults: CC 74 (cutoff) -> SF0, CC 71 (resonance) -> Z80..Z8F.
+	cc_map: [74, ...new Array(15).fill(128)], cc_res: 71,
 };
+export const CC_OFF = 128;
 Object.assign(status, { last_midi_tick: 0, last_midi_event: new Uint8Array(64), last_midi_len: 0,
 	last_midi_real_len: 0, last_midi_port: null });
 
@@ -137,6 +143,7 @@ export function midi_received_cb(src, raw) {
 	if (cmd === 0x8 || (cmd === 0x9 && data[2] === 0)) midi_event_note(0, ch, data[1], 0);
 	else if (cmd === 0x9) midi_event_note(1, ch, data[1], data[2]);
 	else if (cmd === 0xa) midi_event_note(2, ch, data[1], data[2]);
+	else if (cmd === 0xb) midi_event_controller(ch, data[1], data[2]);
 	else if (cmd === 0xe) midi_event_pitchbend(ch, data[1]);
 	else if (cmd === 0xf) {
 		switch (data[0] & 15) {
@@ -170,6 +177,32 @@ function midi_event_pitchbend(channel, value) {
 	kk.midi_note = -1;
 	kk.midi_bend = value;
 	app.handle_key(kk);
+}
+// controller -> { macro: SF index or -1 for the fixed Z80..Z8F, z: the Zxx parameter }
+export function midi_cc_target(param, value) {
+	const n = midi.cc_map.indexOf(param);
+	if (n >= 0) return { macro: n, z: value & 0x7f };
+	if (param === midi.cc_res) return { macro: -1, z: 0x80 | ((value & 0x7f) >> 3) };
+	return null;
+}
+// run the macro on a channel now, as an Zxx row command would (c is 1-based)
+export function midi_cc_apply(csf, c, t) {
+	const chan = csf && csf.voices[c - 1];
+	if (!chan) return;
+	if (t.macro >= 0) chan.active_macro = t.macro;
+	const save = chan.row_param;
+	chan.row_param = t.z;
+	app.fx_midi_zxx(csf, chan);
+	chan.row_param = save;
+}
+function midi_event_controller(channel, param, value) {
+	if (midi.flags & MIDI_DISABLE_RECORD) return;
+	const t = midi_cc_target(param, value);
+	if (!t) return;
+	// the pattern editor records it; elsewhere it only plays, on the keyjazz channel
+	if (optional('pattern_editor_midi_cc', t)) return;
+	const csf = app.current_song();
+	if (csf) midi_cc_apply(csf, app.song_get_current_play_channel(), t);
 }
 function midi_event_system(argv) {
 	if (midi.flags & MIDI_DISABLE_RECORD) return;
@@ -495,12 +528,13 @@ export function GM_IncrementSongCounter(csf, count) {
 export function cfg_get_midi() {
 	const mc = app.current_song && app.current_song();
 	return { flags: midi.flags & ~MIDI_DISABLE_RECORD, pitch_depth: midi.pitch_depth, amplification: midi.amplification,
-		c5note: midi.c5note, config: mc && mc.midi_config ? mc.midi_config : null,
+		c5note: midi.c5note, cc_map: midi.cc_map.slice(), cc_res: midi.cc_res, config: mc && mc.midi_config ? mc.midi_config : null,
 		ports: ports.filter(p => p.io).map(p => ({ name: p.name, input: p.io & MIDI_INPUT ? 1 : 0, output: p.io & MIDI_OUTPUT ? 1 : 0 })) };
 }
 export function cfg_load_midi(data) {
 	if (!data) return;
-	for (const k of ['flags', 'pitch_depth', 'amplification', 'c5note']) if (typeof data[k] === 'number') midi[k] = data[k];
+	for (const k of ['flags', 'pitch_depth', 'amplification', 'c5note', 'cc_res']) if (typeof data[k] === 'number') midi[k] = data[k];
+	if (Array.isArray(data.cc_map) && data.cc_map.length === 16) midi.cc_map = data.cc_map.map(v => (v | 0) & 0xff);
 	if (data.config) midi_set_default_config(data.config);
 	if (Array.isArray(data.ports)) {
 		saved_ports.splice(0, saved_ports.length, ...data.ports);

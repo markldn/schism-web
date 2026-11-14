@@ -83,7 +83,7 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | schism/main.c | 1444 | replaced | js/main.js (event loop) |
 | schism/mem.c | 65 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/menu.c | 537 | ported | js/menu.js |
-| schism/midi-core.c | 1227 | ported | js/midi.js: Web MIDI provider (ports = browser MIDI devices), send with audio-latency timestamps, input -> key events; no IP MIDI |
+| schism/midi-core.c | 1227 | ported | js/midi.js: Web MIDI provider (ports = browser MIDI devices), send with audio-latency timestamps, input -> key events; no IP MIDI; extension: controller input -> SFx/Zxx macros (live + recorded) |
 | schism/midi-ip.c | 438 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/mplink.c | 846 | ported | js/song.js |
 | schism/mt.c | 331 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
