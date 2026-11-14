@@ -65,7 +65,7 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | schism/charset.c | 1800 | todo |  |
 | schism/charset_stdlib.c | 505 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/charset_unicode.c | 77 | todo |  |
-| schism/clippy.c | 251 | todo |  |
+| schism/clippy.c | 251 | replaced | js/clippy.js: browser paste events, async clipboard reads with internal fallback; ModPlug decoder in js/pattern-clipboard.js |
 | schism/config-parser.c | 533 | todo |  |
 | schism/config.c | 553 | replaced | js/page_config.js: localStorage |
 | schism/cpu.c | 170 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |

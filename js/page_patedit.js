@@ -1,7 +1,7 @@
 // Port of schism/page_patedit.c (Schism Tracker, GPL-2.0-or-later).
-// Not ported: MIDI note/bend recording (no MIDI input yet), pattern-to-sample
-// (Ctrl-O/Ctrl-B, needs disko.c), config load/save. The system clipboard gets
-// the ModPlug text format on copy; pasting uses the internal clipboard.
+// Not ported: pattern-to-sample (Ctrl-O/Ctrl-B), config load/save.
+import { clippy_copy, clippy_paste } from './clippy.js';
+import { pattern_selection_system_paste_modplug } from './pattern-clipboard.js';
 import { app, provide } from './app.js';
 import * as C from './sndconst.js';
 import { status, tracker, PAGE, HELP, NEED_UPDATE, SONG_NEEDS_SAVE, CLASSIC_MODE, CRAYOLA_MODE,
@@ -256,10 +256,10 @@ function multichannel_get_previous(cur) {
 }
 
 // ------------------------------------------------------------------------
-// system clipboard (ModPlug text format, copy-out only)
+// system clipboard (ModPlug text format)
 
 function modplug_encode_8bit(x) {
-	return String(x).padStart(2, '0').slice(-2);
+	return String.fromCharCode(48 + Math.trunc(x / 10)) + String(x % 10);
 }
 function pattern_selection_system_copyout() {
 	if (!SELECTION_EXISTS()) return;
@@ -288,7 +288,7 @@ function pattern_selection_system_copyout() {
 let last_copyout = '';
 function clippy_yank() {
 	if (!last_copyout) return;
-	try { navigator.clipboard?.writeText(last_copyout.replace(/[\x80-\xff]/g, '.')); } catch { /* ignore */ }
+	clippy_copy(last_copyout.replace(/[\x80-\xff]/g, '.'));
 }
 
 // ------------------------------------------------------------------------
@@ -1362,6 +1362,15 @@ function pattern_editor_insert(k) {
 const PATTERN_COPYIN_INSERT = 1, PATTERN_COPYIN_OVERWRITE = 2, PATTERN_COPYIN_OVERWRITE_GROW = 3,
 	PATTERN_COPYIN_MIX_NOTES = 4, PATTERN_COPYIN_MIX_FIELDS = 5;
 function do_paste(behavior) {
+	const song = current_song, pattern = current_pattern, row = current_row, channel = current_channel;
+	clippy_paste(text => {
+		if (song !== current_song || pattern !== current_pattern || row !== current_row || channel !== current_channel) return;
+		pattern_selection_system_paste(0, text, behavior);
+	});
+}
+function pattern_selection_system_paste(cb, text, behavior = PATTERN_COPYIN_OVERWRITE) {
+	const parsed = text ? pattern_selection_system_paste_modplug(text) : null;
+	if (parsed) Object.assign(clipboard, parsed);
 	switch (behavior) {
 	case PATTERN_COPYIN_INSERT: clipboard_paste_insert(); break;
 	case PATTERN_COPYIN_OVERWRITE: clipboard_paste_overwrite(0, 0); break;
@@ -1370,6 +1379,7 @@ function do_paste(behavior) {
 	case PATTERN_COPYIN_MIX_FIELDS: clipboard_paste_mix_fields(0, 0); break;
 	}
 	status.flags |= NEED_UPDATE;
+	return 1;
 }
 
 function pattern_editor_handle_alt_key(k) {
@@ -1914,6 +1924,7 @@ export function pattern_editor_load_page(page) {
 	Object.assign(page, {
 		title: 'Pattern Editor (F2)', playback_update: pattern_editor_playback_update,
 		song_changed_cb: pated_song_changed, help_index: HELP.PATTERN_EDITOR, ported: true,
+		clipboard_paste: pattern_selection_system_paste,
 		pre_handle_key: k => {
 			if (k.sym === KEYSYM.F7) {
 				if (!NO_MODIFIER(k.mod)) return 0;

@@ -3,6 +3,7 @@
 
 import { status, PAGE, NEED_UPDATE, DIALOG_NONE } from "./state.js";
 import { slurp_unpack } from './fmt/mmcmp.js';
+import { clipboard_paste } from './clippy.js';
 import { vgamem_flip } from "./vgamem.js";
 import { video_init, video_blit } from "./video.js";
 import { palette_apply } from "./palettes.js";
@@ -52,6 +53,10 @@ provide({ load_file_object });
 // keyboard
 
 function on_key(e, state) {
+	// Let the browser deliver a trusted paste event, including on browsers
+	// that do not expose navigator.clipboard.readText().
+	if (!e.altKey && (((e.ctrlKey || e.metaKey) && e.code === 'KeyV')
+		|| (e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'Insert'))) return;
 	const k = key_event_from_dom(e, state);
 	if (!k) return;
 
@@ -71,6 +76,11 @@ function on_key(e, state) {
 
 window.addEventListener("keydown", (e) => on_key(e, KEY_PRESS));
 window.addEventListener("keyup", (e) => on_key(e, KEY_RELEASE));
+window.addEventListener('paste', e => {
+	if (!e.clipboardData) return;
+	e.preventDefault();
+	clipboard_paste(e.clipboardData.getData('text/plain'));
+});
 
 // ---------------------------------------------------------------------------
 // mouse (mirrors the mouse part of main.c's event loop)

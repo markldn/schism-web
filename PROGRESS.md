@@ -31,6 +31,7 @@ save is also downloaded.
 | Pages | Pattern editor, sample list, instrument list (all 4 sub-pages with envelopes), order list (pan + volume), info page, song variables, message editor, load/save/export module, load sample/instrument + libraries, help, log, about, system config, preferences, palette editor, time information, MIDI screen, MIDI output configuration, waterfall (Alt-F12) |
 | UI shell | menus, dialogs, all widgets, global keys, top bar, status line, clock, oscilloscope/VU/spectrum visualiser |
 | Settings | saved to localStorage ("Save all Preferences" on F12, or Save on Shift-F5 / palette changes) |
+| Clipboard | ModPlug IT/S3M/XM/MOD pattern text import; Ctrl-V / Shift-Insert paste into patterns, text fields and song messages; Alt-O/P/M read the system clipboard with internal fallback when access is unavailable |
 
 ## Checks
 
@@ -42,6 +43,7 @@ save is also downloaded.
 | `node test/formats.mjs file@fmt_s3m_save_song ...` | same for S3M/MOD saving |
 | `node test/render.mjs in out.wav [secs]` | renders a module with the JS player (used to compare against libopenmpt) |
 | `python3 test/smoke.py outdir module keys...` | drives the page in headless Chrome and takes screenshots |
+| `python3 test/clipboard.py` | real browser clipboard copy/paste, Alt paste modes, undo, malformed input, bounds, text/message fields, dialog isolation and pending-read cancellation (serve repository on :8778 first) |
 | the original `test/*.py` / `test/*.mjs` | table, pitch, slide, filter, PCM and kernel parity against compiled C |
 
 Measured 2026-11-14: 74 modules across all supported formats render identical
@@ -67,7 +69,6 @@ arbitrary IT songs. The IT resaved file also differs in bytes despite identical 
 - [ ] A few files differ from the C build by one LSB in one sample every few minutes (cause not found)
 - [ ] Font editor (itf.c)
 - [ ] Text synth (Alt-Y in the sample list), sample editor drag-selection
-- [ ] System clipboard paste (copy out works, paste uses the internal clipboard) - in progress
 - [ ] Digraph / Alt-numpad / Unicode text entry (charset.c)
 - [ ] Info page window layout and pattern editor options are not saved between sessions
 - [ ] Changing the mixing rate needs a page reload
@@ -79,6 +80,9 @@ arbitrary IT songs. The IT resaved file also differs in bytes despite identical 
   fullscreen in Chrome or Edge.
 - The page cannot quit the program or move the mouse pointer.
 - Files come and go through import and download, not a real disk.
+- Alt-O/P/M clipboard reads need a secure context and browser permission;
+  if unavailable they use the internal clipboard. Ctrl-V / Shift-Insert use
+  the browser paste event. Text fields retain the existing ASCII input limit.
 
 ## How to work on it
 

@@ -1,6 +1,7 @@
 // Port of schism/page_message.c (Schism Tracker, GPL-2.0-or-later).
 // The message is held as a JS string with '\n' line ends (converted back to
-// CR on IT save). Mouse drag selection / clipboard is not ported.
+// CR on IT save). Mouse drag selection / copy-out is not ported; paste uses
+// the shared clipboard text-input path.
 import { provide } from './app.js';
 import { status, PAGE, HELP, NEED_UPDATE, SONG_NEEDS_SAVE, DIALOG_OK, DIALOG_OK_CANCEL } from './state.js';
 import { draw_char, draw_char_bios, draw_box, draw_fill_chars, DEFAULT_FG, BOX_THICK, BOX_INNER, BOX_INSET } from './vgamem.js';

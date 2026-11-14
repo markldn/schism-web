@@ -17,6 +17,11 @@ Doom MUS. IT, S3M and MOD save (saved files also download); WAV/AIFF audio
 export includes per-channel files. AdLib playback, Web MIDI and a waterfall
 visualiser are included. Use IT to preserve songs: conversion to older formats
 can lose instruments, notes or effects.
+
+Paste patterns from Schism/OpenMPT with Ctrl-V or Shift-Insert; Alt-O/P/M
+provide overwrite, insert and mix modes. Text fields and song messages also
+accept paste. Browser clipboard permission is needed for the Alt shortcuts;
+they fall back to the internal clipboard when access is unavailable.
 See PROGRESS.md for what works and what doesn't, PORTING.md per C file.
 
     python3 test/parity.py     # pixel-compare against the original (needs ../schism-web/dist)
