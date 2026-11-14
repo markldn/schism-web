@@ -4,7 +4,7 @@
 // because JavaScript runs the mixer and the UI on the same thread.
 import { app, provide, optional } from "./app.js";
 import * as C from './sndconst.js';
-import { status, SONG_NEEDS_SAVE, NEED_UPDATE, PLAY_AFTER_LOAD } from './state.js';
+import { status, SONG_NEEDS_SAVE, NEED_UPDATE, PLAY_AFTER_LOAD, CLASSIC_MODE, DISKWRITER_ACTIVE, DISKWRITER_ACTIVE_PATTERN } from './state.js';
 import './csndfile.js';
 import './effects.js';
 import './sndmix.js';
@@ -83,7 +83,8 @@ export async function audio_init() {
 	if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return; }
 	const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
 	if (!AC) return;
-	ctx = new AC({ latencyHint: 'interactive', sampleRate: audio_settings.sample_rate });
+	try { ctx = new AC({ latencyHint: 'interactive', sampleRate: audio_settings.sample_rate }); }
+	catch (e) { ctx = new AC({ latencyHint: 'interactive' }); } // rate outside what the browser accepts
 	mix_rate = ctx.sampleRate;
 	const url = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }));
 	await ctx.audioWorklet.addModule(url);
@@ -98,6 +99,29 @@ export async function audio_init() {
 	snapshots.length = 0;
 	pumping = setInterval(pump, 8);
 	if (ctx.state === 'suspended') ctx.resume();
+}
+// audio_playback.c: audio_reinit. Closes the AudioContext and opens a new one
+// (with the configured mixing rate); playback state is kept.
+export async function audio_reinit() {
+	if (status.flags & (DISKWRITER_ACTIVE | DISKWRITER_ACTIVE_PATTERN)) return 0; /* never allowed */
+	if (status.flags & CLASSIC_MODE) app.song_stop();
+	let success = 1;
+	try {
+		if (pumping) clearInterval(pumping);
+		pumping = null;
+		if (node) { node.port.onmessage = null; node.disconnect(); }
+		const old = ctx;
+		ctx = node = null;
+		if (old) await old.close().catch(() => {});
+		await audio_init();
+		success = !!ctx;
+	} catch (e) {
+		console.warn('audio_reinit', e);
+		success = 0;
+	}
+	app.status_text_flash(success ? ((status.flags & CLASSIC_MODE) ? 'Sound Blaster 16 reinitialised' : 'Audio output reinitialised')
+		: 'Failed to reinitialise audio!');
+	return success;
 }
 export function audio_is_running() { return !!(ctx && ctx.state === 'running'); }
 export function audio_sample_rate() { return mix_rate; }
@@ -877,7 +901,7 @@ export function song_get_title() { return current_song.title; }
 export function song_get_message() { return current_song.message; }
 
 provide({
-	song_initialise, song_new, song_init_modplug, song_load_data, song_get_filename, song_get_basename,
+	audio_reinit, song_initialise, song_new, song_init_modplug, song_load_data, song_get_filename, song_get_basename,
 	song_get_tracker_id, song_get_current_play_channel, song_change_current_play_channel,
 	song_toggle_multichannel_mode, song_is_multichannel_mode, song_keydown, song_keyrecord, song_keyup,
 	song_keyup_channel, song_single_step, song_start_once, song_start, song_pause, song_stop,

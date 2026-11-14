@@ -3,8 +3,7 @@
 // Ported: screen frame, set_page, status text line, the global key handler
 // (handle_key_global / handle_key), new-song dialog, the top-row "minipop"
 // sliders, exit / time-jump / song-length prompts.
-// TODO(port): _handle_ime (digraphs, Ctrl-Shift Unicode, Alt-numpad entry; needs
-// charset.c), the top-right visualiser, the clock, and the values in
+// TODO(port): the top-right visualiser, the clock, and the values in
 // redraw_top_info, which wait for the song and player modules.
 
 import { status, tracker, PAGE, HELP, NEED_UPDATE, INVERTED_PALETTE, CLASSIC_MODE, SONG_NEEDS_SAVE,
@@ -13,11 +12,12 @@ import { draw_char, draw_text, draw_text_len, draw_text_bios_len, draw_fill_char
 	vgamem_ovl_alloc, vgamem_ovl_clear, vgamem_ovl_apply, vgamem_ovl_drawline, draw_sample_data_rect,
 	DEFAULT_FG, BOX_THIN, BOX_INNER, BOX_INSET } from "./vgamem.js";
 import { KEYSYM, KEYMOD, KEY_PRESS, KEY_RELEASE, NO_MODIFIER, MOUSE_NONE, MOUSE_CLICK, MOUSE_DBLCLICK,
-	kbd_get_current_octave, kbd_set_current_octave } from "./keyboard.js";
+	kbd_get_current_octave, kbd_set_current_octave, kbd_char_to_hex, numeric_key_event } from "./keyboard.js";
 import { str_from_num99 } from "./widget.js";
 import { ui_set, widget_draw_widget, widget_handle_key, widget_handle_text_input, widget_change_focus_to,
 	widget_create_togglebutton, widget_create_button, widget_create_thumbbar, widget_create_numentry,
-	widget_togglebutton_set, active_widget, ui } from "./widget.js";
+	widget_togglebutton_set, active_widget, ui, widget_textentry_add_char, WIDGET_TEXTENTRY } from "./widget.js";
+import { char_digraph, char_unicode_to_cp437 } from './charset.js';
 import { dialog_draw, dialog_create, dialog_create_custom, dialog_destroy_all, dialog_handle_key,
 	dialog_yes_NULL, dialog_cancel_NULL } from "./dialog.js";
 import { VIS_SENTINEL, DISKWRITER_ACTIVE, STARTUP_FONTEDIT, DIALOG_OK, DIALOG_OK_CANCEL } from "./state.js";
@@ -80,6 +80,7 @@ export function status_text_flash(text) {
 	status.flags |= NEED_UPDATE;
 }
 
+export function status_text_clear() { status_text = null; status.flags |= NEED_UPDATE; }
 export function status_text_flash_bios(text) {
 	status_text_flash(text);
 	status_bios = true;
@@ -967,11 +968,136 @@ function handle_key_global(k) {
 	return 0;
 }
 
+// page.c: _handle_ime -- digraphs (Ctrl, Ctrl, two characters), Ctrl-Shift + hex digits
+// (Unicode), Alt + keypad digits (DOS code). Only while a widget accepting text has focus.
+const ime = { alt_numpad: 0, alt_numpad_c: 0, digraph_n: 0, digraph_c: 0, cs_unicode: 0, cs_unicode_c: 0 };
+// upstream feeds the resulting byte through the UTF-8 text path, which drops anything
+// above 127; here the character code goes straight into the widget
+function ime_text_input(code) {
+	const w = active_widget();
+	if (w && w.type === WIDGET_TEXTENTRY) { widget_textentry_add_char(w, code); return; }
+	handle_text_input(String.fromCharCode(code));
+}
+function _handle_ime(k) {
+	let c, m;
+	const page = ui.holder; // the focused widget set: the page, or an open dialog
+	const is_ctrl = k.sym === KEYSYM.LCTRL || k.sym === KEYSYM.RCTRL;
+	const is_shift = k.sym === KEYSYM.LSHIFT || k.sym === KEYSYM.RSHIFT;
+	if (page.selected_widget > -1 && page.selected_widget < page.total_widgets
+	    && active_widget() && active_widget().accept_text) {
+		if (ime.digraph_n === -1 && k.state === KEY_RELEASE) {
+			ime.digraph_n = 0;
+		} else if (!(status.flags & CLASSIC_MODE) && is_ctrl) {
+			if (k.state === KEY_RELEASE && ime.digraph_n >= 0) {
+				ime.digraph_n++;
+				if (ime.digraph_n >= 2) status_text_flash_bios('Enter digraph:');
+			}
+		} else if (is_shift) {
+			/* do nothing */
+		} else if (!NO_MODIFIER(k.mod & ~KEYMOD.SHIFT) || (c = k.text ? k.text.charCodeAt(0) & 0xff : k.sym) === 0 || ime.digraph_n < 2) {
+			if (k.state === KEY_PRESS && k.mouse === MOUSE_NONE) {
+				if (ime.digraph_n > 0) status_text_clear();
+				ime.digraph_n = -1;
+			}
+		} else if (ime.digraph_n >= 2) {
+			if (k.state === KEY_RELEASE) return 1;
+			if (!ime.digraph_c) {
+				ime.digraph_c = c;
+				status_text_flash_bios(`Enter digraph: ${String.fromCharCode(c)}`);
+			} else {
+				const d = char_digraph(ime.digraph_c, c);
+				const pair = String.fromCharCode(ime.digraph_c, c);
+				status_text_flash_bios(d ? `Enter digraph: ${pair} -> ${String.fromCharCode(d)}` : `Enter digraph: ${pair} -> INVALID`);
+				ime.digraph_n = ime.digraph_c = 0;
+				if (d) ime_text_input(d);
+			}
+			return 1;
+		} else {
+			if (ime.digraph_n > 0) status_text_clear();
+			ime.digraph_n = 0;
+		}
+
+		/* ctrl+shift -> unicode character */
+		if (is_ctrl || is_shift) {
+			if (k.state === KEY_RELEASE) {
+				if (ime.cs_unicode_c > 0) {
+					const u = char_unicode_to_cp437(ime.cs_unicode);
+					const hex = ime.cs_unicode.toString(16).toUpperCase().padStart(4, '0');
+					if (u >= 32) {
+						status_text_flash_bios(`Enter Unicode: U+${hex} -> ${u}`);
+						ime_text_input(u);
+					} else status_text_flash_bios(`Enter Unicode: U+${hex} -> INVALID`);
+					ime.cs_unicode = ime.cs_unicode_c = 0;
+					ime.alt_numpad = ime.alt_numpad_c = 0;
+					ime.digraph_n = ime.digraph_c = 0;
+				}
+				return 1;
+			}
+		} else if (!(status.flags & CLASSIC_MODE) && (k.mod & KEYMOD.CTRL) && (k.mod & KEYMOD.SHIFT)) {
+			if (ime.cs_unicode_c >= 0) {
+				/* bleh... */
+				m = k.mod; k.mod = 0;
+				c = kbd_char_to_hex(k);
+				k.mod = m;
+				if (c === -1) {
+					ime.cs_unicode = ime.cs_unicode_c = -1;
+				} else {
+					if (k.state === KEY_PRESS) return 1;
+					ime.cs_unicode = ime.cs_unicode * 16 + c;
+					ime.cs_unicode_c++;
+					ime.digraph_n = ime.digraph_c = 0;
+					status_text_flash_bios(`Enter Unicode: U+${ime.cs_unicode.toString(16).toUpperCase().padStart(4, '0')}`);
+					return 1;
+				}
+			}
+		} else {
+			if (is_ctrl || is_shift) return 1;
+			ime.cs_unicode = ime.cs_unicode_c = 0;
+		}
+
+		/* alt+numpad -> char number */
+		if (k.sym === KEYSYM.LALT || k.sym === KEYSYM.RALT || k.sym === KEYSYM.LGUI || k.sym === KEYSYM.RGUI) {
+			if (k.state === KEY_RELEASE && ime.alt_numpad_c > 0 && (ime.alt_numpad & 255) > 0) {
+				if (ime.alt_numpad < 32) return 0;
+				const u = ime.alt_numpad & 255;
+				if (!(status.flags & CLASSIC_MODE)) status_text_flash_bios(`Enter DOS/ASCII: ${u} -> ${String.fromCharCode(u)}`);
+				ime_text_input(u);
+				ime.alt_numpad = ime.alt_numpad_c = 0;
+				ime.digraph_n = ime.digraph_c = 0;
+				ime.cs_unicode = ime.cs_unicode_c = 0;
+				return 1;
+			}
+		} else if ((k.mod & KEYMOD.ALT) && !(k.mod & (KEYMOD.CTRL | KEYMOD.SHIFT))) {
+			if (ime.alt_numpad_c >= 0) {
+				m = k.mod; k.mod = 0;
+				c = numeric_key_event(k, 1); /* kp only */
+				k.mod = m;
+				if (c === -1 || c > 9) {
+					ime.alt_numpad = ime.alt_numpad_c = -1;
+				} else {
+					if (k.state === KEY_PRESS) return 1;
+					ime.alt_numpad = ime.alt_numpad * 10 + c;
+					ime.alt_numpad_c++;
+					if (!(status.flags & CLASSIC_MODE)) status_text_flash_bios(`Enter DOS/ASCII: ${ime.alt_numpad}`);
+					return 1;
+				}
+			}
+		} else {
+			ime.alt_numpad = ime.alt_numpad_c = 0;
+		}
+	} else {
+		ime.cs_unicode = ime.cs_unicode_c = 0;
+		ime.alt_numpad = ime.alt_numpad_c = 0;
+		ime.digraph_n = ime.digraph_c = 0;
+	}
+	return 0;
+}
+
 export function handle_key(k) {
 	const page = active_page();
 	const disko = status.flags & DISKWRITER_ACTIVE;
 
-	// TODO(port): _handle_ime(k)
+	if (_handle_ime(k)) return;
 
 	if (!disko && page.pre_handle_key && page.pre_handle_key(k)) return;
 

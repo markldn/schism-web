@@ -1,19 +1,23 @@
 // Port of schism/page_message.c (Schism Tracker, GPL-2.0-or-later).
 // The message is held as a JS string with '\n' line ends (converted back to
-// CR on IT save). Mouse drag selection / copy-out is not ported; paste uses
-// the shared clipboard text-input path.
-import { provide } from './app.js';
+// CR on IT save). Mouse drag selects text (clippy.c's selection buffer; Ctrl-C
+// copies it to the system clipboard); paste uses the shared text-input path.
+import { provide, app } from './app.js';
 import { status, PAGE, HELP, NEED_UPDATE, SONG_NEEDS_SAVE, DIALOG_OK, DIALOG_OK_CANCEL } from './state.js';
-import { draw_char, draw_char_bios, draw_box, draw_fill_chars, DEFAULT_FG, BOX_THICK, BOX_INNER, BOX_INSET } from './vgamem.js';
-import { KEYSYM, KEYMOD, KEY_PRESS, KEY_RELEASE, NO_MODIFIER, MOUSE_NONE, MOUSE_CLICK, MOUSE_SCROLL_UP, MOUSE_SCROLL_DOWN } from './keyboard.js';
+import { draw_char, draw_char_bios, draw_text_len, draw_text_bios_len, draw_box, draw_fill_chars, DEFAULT_FG, BOX_THICK, BOX_INNER, BOX_INSET } from './vgamem.js';
+import { KEYSYM, KEYMOD, KEY_PRESS, KEY_RELEASE, NO_MODIFIER, MOUSE_NONE, MOUSE_CLICK, MOUSE_SCROLL_UP, MOUSE_SCROLL_DOWN, MOUSE_BUTTON_RIGHT } from './keyboard.js';
 import { widget_create_other, MOUSE_SCROLL_LINES } from './widget.js';
 import { dialog_create } from './dialog.js';
 import { pages } from './page.js';
 import { current_song } from './song.js';
+import { clippy_copy } from './clippy.js';
 
 const LINE_WRAP = 75, MAX_MESSAGE = 8000;
 let top_line = 0, cursor_line = 0, cursor_char = 0, edit_mode = 0, message_extfont = 1;
 let widget;
+// clippy_select(widgets_message, ...): the selection, as absolute positions in the message
+let selection = null; // { start, end } or null
+const sel_range = () => selection ? [Math.min(selection.start, selection.end), Math.max(selection.start, selection.end)] : null;
 const msg = () => current_song.message || '';
 const set_msg = s => { current_song.message = s; };
 const lines = () => msg().split('\n');
@@ -35,9 +39,19 @@ function message_draw() {
 	const L = lines();
 	draw_fill_chars(2, 13, 77, 47, DEFAULT_FG, 0);
 	let n;
+	const clip = sel_range();
 	for (n = 0; n < 35 && top_line + n < L.length; n++) {
 		const line = L[top_line + n];
 		text(line, n);
+		if (clip) {
+			const len = Math.min(line.length, LINE_WRAP), cp = abs_pos(top_line + n, 0);
+			let skipc = clip[0] - cp, cutc = clip[1] - clip[0];
+			if (skipc < 0) { cutc += skipc; skipc = 0; }
+			if (cutc < 0) cutc = 0;
+			if (cutc > len - skipc) cutc = len - skipc;
+			if (cutc > 0 && skipc < len)
+				(message_extfont ? draw_text_bios_len : draw_text_len)(line.slice(skipc), cutc, 2 + skipc, 13 + n, 6, 8);
+		}
 		if (edit_mode) draw_char(20, 2 + Math.min(line.length, LINE_WRAP), 13 + n, top_line + n === L.length - 1 ? 2 : 1, 0);
 	}
 	if (edit_mode) {
@@ -95,6 +109,23 @@ function insert_char(c) {
 	message_reposition();
 	status.flags |= NEED_UPDATE | SONG_NEEDS_SAVE;
 }
+// page_message.c: _delete_selection (removes through the character at the far end, as upstream)
+function delete_selection() {
+	const len = msg().length;
+	let cursor_pos = selection.start, eat;
+	if (cursor_pos > selection.end) { cursor_pos = selection.end; eat = selection.start - cursor_pos; }
+	else eat = selection.end - cursor_pos;
+	selection = null;
+	if (cursor_pos >= len) return;
+	set_msg(msg().slice(0, cursor_pos) + msg().slice(cursor_pos + eat + 1));
+	// set_absolute_position
+	const L = lines();
+	let p = cursor_pos, line = 0;
+	while (line < L.length - 1 && p > L[line].length) { p -= L[line].length + 1; line++; }
+	cursor_line = line; cursor_char = Math.min(p, L[line].length);
+	message_reposition();
+	status.flags |= NEED_UPDATE | SONG_NEEDS_SAVE;
+}
 function delete_char() {
 	const pos = abs_pos(cursor_line, cursor_char);
 	if (pos === 0) return;
@@ -142,6 +173,7 @@ function handle_key_viewmode(k) {
 	return 1;
 }
 function handle_text_input_editmode(t) {
+	if (selection) delete_selection();
 	for (const ch of t) { const c = ch.charCodeAt(0); if (c < 256) insert_char(ch); }
 	return 1;
 }
@@ -150,8 +182,19 @@ function handle_key_editmode(k) {
 	const L = lines(), num_lines = L.length - 1;
 	if (k.mouse === MOUSE_SCROLL_UP) { if (k.state === KEY_RELEASE) return 0; new_line -= MOUSE_SCROLL_LINES; }
 	else if (k.mouse === MOUSE_SCROLL_DOWN) { if (k.state === KEY_RELEASE) return 0; new_line += MOUSE_SCROLL_LINES; }
+	let doing_drag = 0;
+	if (k.mouse === MOUSE_CLICK && k.mouse_button === MOUSE_BUTTON_RIGHT) return 1;
 	else if (k.mouse === MOUSE_CLICK) {
-		if (k.x >= 2 && k.x <= 77 && k.y >= 13 && k.y <= 47) { new_line = k.y - 13 + top_line; new_char = k.x - 2; }
+		if (k.x >= 2 && k.x <= 77 && k.y >= 13 && k.y <= 47) {
+			new_line = k.y - 13 + top_line; new_char = k.x - 2;
+			if (k.sx !== k.x || k.sy !== k.y) {
+				/* yay drag operation */
+				const sl = k.sy - 13 + top_line;
+				const start = sl < L.length ? abs_pos(sl, k.sx - 2) : 0;
+				if (selection) selection.start = start; else selection = { start, end: start };
+				doing_drag = 1;
+			}
+		}
 	}
 	const line_len = (L[cursor_line] || '').length, rel = k.state === KEY_RELEASE, nm = NO_MODIFIER(k.mod);
 	switch (k.sym) {
@@ -164,14 +207,20 @@ function handle_key_editmode(k) {
 	case KEYSYM.HOME: if (rel) return 1; if (k.mod & KEYMOD.CTRL) new_line = 0; else new_char = 0; break;
 	case KEYSYM.END: if (rel) return 1; if (k.mod & KEYMOD.CTRL) new_line = num_lines; else new_char = line_len; break;
 	case KEYSYM.ESCAPE: if (!nm) return 0; if (rel) return 1; set_viewmode(); return 1;
-	case KEYSYM.BACKSPACE: if (!nm) return 0; if (rel) return 1; delete_char(); return 1;
-	case KEYSYM.DELETE: if (!nm) return 0; if (rel) return 1; delete_next_char(); return 1;
-	case KEYSYM.RETURN: if (nm) { if (rel) return 1; insert_char('\n'); return 1; } return 0;
+	case KEYSYM.BACKSPACE: if (!nm) return 0; if (rel) return 1; if (selection) delete_selection(); else delete_char(); return 1;
+	case KEYSYM.DELETE: if (!nm) return 0; if (rel) return 1; if (selection) delete_selection(); else delete_next_char(); return 1;
+	case KEYSYM.RETURN: if (nm) { if (rel) return 1; if (selection) delete_selection(); insert_char('\n'); return 1; } return 0;
 	case KEYSYM.TAB: if (nm) { if (rel) return 1; insert_char('\t'); return 1; } return 0;
 	default:
 		if (k.mod & KEYMOD.CTRL) {
 			if (rel) return 1;
 			if (k.sym === KEYSYM.t) { message_extfont = !message_extfont; break; }
+			if ((k.sym === KEYSYM.c || k.sym === KEYSYM.INSERT) && selection) {
+				const [a, b] = sel_range();
+				clippy_copy(msg().slice(a, b));
+				app.status_text_flash('Copied to selection buffer');
+				return 1;
+			}
 			if (k.sym === KEYSYM.y) { delete_line(); break; }
 		} else if (k.mod & KEYMOD.ALT) {
 			if (rel) return 1;
@@ -185,6 +234,7 @@ function handle_key_editmode(k) {
 		}
 		if (k.mouse !== MOUSE_CLICK) return 0;
 		if (rel) return 1;
+		if (!doing_drag) selection = null;
 	}
 	const L2 = lines();
 	if (new_line !== cursor_line) {
@@ -202,6 +252,7 @@ function handle_key_editmode(k) {
 		cursor_char = new_char;
 	}
 	message_reposition();
+	if (doing_drag) selection.end = abs_pos(cursor_line, cursor_char);
 	status.flags |= NEED_UPDATE;
 	return 1;
 }
@@ -210,6 +261,6 @@ widget = widget_create_other(0, handle_key_viewmode, null, message_draw);
 widget.accept_text = 0;
 Object.assign(pages[PAGE.MESSAGE], { title: 'Message Editor (Shift-F9)', ported: true, help_index: HELP.MESSAGE_EDITOR,
 	draw_const: () => draw_box(1, 12, 78, 48, BOX_THICK | BOX_INNER | BOX_INSET),
-	song_changed_cb: () => { set_viewmode(); top_line = 0; },
+	song_changed_cb: () => { set_viewmode(); top_line = 0; selection = null; },
 	widgets: [widget], total_widgets: 1 });
 provide({});

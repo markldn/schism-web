@@ -1,13 +1,13 @@
 # Progress and to-do
 
 Native JavaScript port of Schism Tracker. No WebAssembly, no build step.
-Last updated 2026-11-14. Per-file detail is in `PORTING.md`.
+Last updated 2026-11-14 (second session). Per-file detail is in `PORTING.md`.
 
 ## Where it stands
 
 It works as a tracker in the browser: load a module (IT, XM, S3M, MOD, 669,
 MTM, STM, STX, FAR, ULT, OKT, IMF, SFX, DSM, MDL, PSM, EdLib D00, MIDI files,
-Doom MUS, also when MMCMP-packed or gzipped),
+Doom MUS, also when MMCMP-, gzip-, bzip2-, xz- or zstd-packed),
 play it through Web Audio, edit patterns, samples, instruments and the order
 list, then save as IT, S3M or MOD (or export to WAV/AIFF, also one file per channel). Files live in a virtual
 disk in the browser (IndexedDB); you import from the real disk by dropping
@@ -25,13 +25,13 @@ save is also downloaded.
 | MIDI macros | Zxx / SFx filter macros, MIDI output macros |
 | MIDI | Web MIDI ports on the MIDI screen (Shift-F1), MIDI output config page, instruments with a MIDI channel play on MIDI out, MIDI input keyjazz and recording (Ctrl-Z / Ctrl-X start triggers), General MIDI "tracker semantics" mode |
 | Audio output | AudioWorklet fed from the main thread (~40 ms latency); keeps running in a background tab |
-| Loaders | IT (incl. IT2.14/2.15 compressed samples), XM, S3M, MOD/15-sample MOD, 669, MTM, STM, STX, FAR, ULT, OKT, IMF, SFX, DSM, MDL, PSM (old/new/Sinaria), D00, MID and MUS (played through the AdLib GM patch bank); MMCMP and gzip unpacking; file-browser detection for every format upstream knows |
-| Savers | IT, S3M, MOD; samples as ITS/S3I/SBI/AIFF/AU/WAV/RAW (Alt-T export dialog, Alt-O ITS); instruments as ITI; song export WAV, AIFF and per-channel MWAV/MAIFF, byte-identical to the C diskwriter |
-| Sample/instrument loading | ITS, WAV (smpl loops, xtra), AIFF, 8SVX/16SV, AU, W64, SBI (AdLib), S3I, SNES BRR, ITI, XI, raw; MP3/Ogg/FLAC and compressed WAV via the browser's decoder; samples and instruments can be pulled out of any module (library browsing) |
-| Pages | Pattern editor, sample list, instrument list (all 4 sub-pages with envelopes), order list (pan + volume), info page, song variables, message editor, load/save/export module, load sample/instrument + libraries, help, log, about, system config, preferences, palette editor, time information, MIDI screen, MIDI output configuration, waterfall (Alt-F12) |
-| UI shell | menus, dialogs, all widgets, global keys, top bar, status line, clock, oscilloscope/VU/spectrum visualiser |
-| Settings | saved to localStorage ("Save all Preferences" on F12, or Save on Shift-F5 / palette changes) |
-| Clipboard | ModPlug IT/S3M/XM/MOD pattern text import; Ctrl-V / Shift-Insert paste into patterns, text fields and song messages; Alt-O/P/M read the system clipboard with internal fallback when access is unavailable |
+| Loaders | IT (incl. IT2.14/2.15 compressed samples), XM, S3M, MOD/15-sample MOD, 669, MTM, STM, STX, FAR, ULT, OKT, IMF, SFX, DSM, MDL, PSM (old/new/Sinaria), D00, MID and MUS (played through the AdLib GM patch bank); MMCMP, gzip (browser), bzip2, xz and zstd unpacking (own decoders, js/fmt/unpack.js); file-browser detection for every format upstream knows |
+| Savers | IT, S3M, MOD; samples as ITS/S3I/SBI/AIFF/AU/WAV/RAW (Alt-T export dialog, Alt-O ITS); instruments as ITI/XI (Alt-T export dialog, Alt-O ITI); samples also as FLAC (own encoder, upstream's loop/xtra metadata); song export WAV, AIFF, FLAC and per-channel MWAV/MAIFF/MFLAC (WAV/AIFF byte-identical to the C diskwriter); pattern to sample (Ctrl-O, split per channel Ctrl-Shift-O, bound Ctrl-B, re-rendered when leaving the pattern) |
+| Sample/instrument loading | ITS, WAV (smpl loops, xtra), AIFF, 8SVX/16SV, AU, W64, SBI (AdLib), S3I, SNES BRR, ITI, XI, GUS PAT, SoundFont 2, raw, FLAC (own decoder, keeps loops and xtra data); MP3/Ogg and compressed WAV via the browser's decoder; samples and instruments can be pulled out of any module, and instrument files open as sample libraries in the sample browser; the load-sample preview fields are editable (affect the keyjazz preview, as upstream) |
+| Pages | Pattern editor, sample list (incl. text synth Alt-Y, AdLib parameters Alt-Z, AdLib patch Shift-Alt-Z), instrument list (all 4 sub-pages with envelopes), order list (pan + volume), info page, song variables, message editor, load/save/export module, load sample/instrument + libraries, help, log, about, system config, preferences, palette editor, time information, MIDI screen, MIDI output configuration, waterfall (Alt-F12) |
+| UI shell | menus, dialogs, all widgets, global keys, top bar, status line, clock, oscilloscope/VU/spectrum visualiser; text entry maps Unicode to the tracker font, digraphs (Ctrl Ctrl + 2 chars), Ctrl-Shift + hex Unicode and Alt + keypad DOS codes |
+| Settings | saved to localStorage ("Save all Preferences" on F12, or Save on Shift-F5 / palette changes), including the info page layout and pattern editor options; the settings C writes at exit are written when the tab is closed; the mixing rate applies at once (audio reopens), Ctrl-Alt-... audio reinit works |
+| Clipboard | ModPlug IT/S3M/XM/MOD pattern text import; Ctrl-V / Shift-Insert paste into patterns, text fields and song messages; Alt-O/P/M read the system clipboard with internal fallback when access is unavailable; mouse drag selection in the message editor (Ctrl-C copies it, typing replaces it) |
 | Fonts | Shift-F12 font editor: pixel/row/column drawing, mouse drag/erase, shifts, rotation, flips, glyph copy/paste/mix, invert, resets and palette shortcuts; load ITF/raw 8x8 or 8x16 via F9 import or drop; F10 saves/downloads ITF, and saving font.cfg persists the default |
 
 ## Checks
@@ -45,6 +45,9 @@ save is also downloaded.
 | `node test/render.mjs in out.wav [secs]` | renders a module with the JS player (used to compare against libopenmpt) |
 | `python3 test/smoke.py outdir module keys...` | drives the page in headless Chrome and takes screenshots |
 | `python3 test/clipboard.py` | real browser clipboard copy/paste, Alt paste modes, undo, malformed input, bounds, text/message fields, dialog isolation and pending-read cancellation (serve repository on :8778 first) |
+| `node test/instsave.mjs file...` | every instrument of each module saved as ITI and XI, reloaded, sample data/loops/envelopes/map compared |
+| `node test/flac.mjs file...` | every sample of each module saved as FLAC and reloaded (data, loops, vibrato, volumes, rate); ffmpeg must decode each file to the same PCM |
+| `node test/unpack.mjs file...` | bzip2/xz/zstd decoders against the command-line tools (several levels each) |
 | `python3 test/fonts.py` | font editing and mouse operations, file format validation/conversion, real import/download, virtual-disk and default persistence, dialog isolation (starts a temporary server) |
 | the original `test/*.py` / `test/*.mjs` | table, pitch, slide, filter, PCM and kernel parity against compiled C |
 
@@ -66,13 +69,8 @@ arbitrary IT songs. The IT resaved file also differs in bytes despite identical 
 
 ## Not done
 
-- [ ] Instrument formats PAT (GUS) and SF2; FLAC saving (no encoder in the browser)
-- [ ] bzip2 / xz / zstd packed modules (gzip and MMCMP work)
 - [ ] A few files differ from the C build by one LSB in one sample every few minutes (cause not found)
-- [ ] Text synth (Alt-Y in the sample list), sample editor drag-selection
-- [ ] Digraph / Alt-numpad / Unicode text entry (charset.c)
-- [ ] Info page window layout and pattern editor options are not saved between sessions
-- [ ] Changing the mixing rate needs a page reload
+- [ ] xz files using BCJ/delta filters (only LZMA2, which is what `xz` writes by default); zstd dictionaries
 
 ## Limits the browser imposes
 

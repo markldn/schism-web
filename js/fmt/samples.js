@@ -8,6 +8,7 @@
 import { app } from '../app.js';
 import * as C from '../sndconst.js';
 import { fp_open, read_sample, fpio } from './loaders.js';
+import { flac_decode } from './flac.js';
 
 const { u8, u16, u16be, u32, bytes, seek, tell } = fpio;
 const u32be = fp => ((u8(fp) << 24) | (u8(fp) << 16) | (u8(fp) << 8) | u8(fp)) >>> 0;
@@ -497,7 +498,53 @@ export function brr_info(b) {
 		smp_speed: 32000, smp_length: len, smp_loop_start: brr.loop ? brr_ratio(brr.loop_start) : 0, smp_loop_end: brr.loop ? len : 0 };
 }
 // the native sample loaders tried before ITS-less fallbacks (load_sample_funcs order, ITS handled by the caller)
+// fmt/flac.c: fmt_flac_load_sample (decoded here, not by the browser, to keep the loop metadata)
+function flac_load_sample(b, smp) {
+	let r;
+	try { r = flac_decode(b); } catch (e) { return 0; }
+	if (!r || !r.total || r.total > C.MAX_SAMPLE_LENGTH || r.channels > 2 || r.bps > 32) return 0;
+	smp.c5speed = r.rate;
+	smp.length = r.total;
+	smp.flags &= ~(C.CHN_16BIT | C.CHN_STEREO);
+	let loop_start = -1, loop_length = -1;
+	for (const m of r.meta) {
+		if (m.type === 4) { // VORBIS_COMMENT: vendor string, then count + entries
+			const d = m.data, le = o => (d[o] | (d[o + 1] << 8) | (d[o + 2] << 16) | (d[o + 3] << 24)) >>> 0;
+			let p = 4 + le(0);
+			const n = le(p); p += 4;
+			for (let i = 0; i < n && p + 4 <= d.length; i++) {
+				const len = le(p); p += 4;
+				const t = new TextDecoder().decode(d.subarray(p, p + len)); p += len;
+				const kv = /^([^=]*)=(.*)$/s.exec(t);
+				if (!kv) continue;
+				const key = kv[1].toUpperCase(), val = kv[2];
+				if (key === 'TITLE') smp.name = (val.split(/\s/)[0] || '').slice(0, 25);
+				else if (key === 'SAMPLERATE' && /^\d+$/.test(val)) smp.c5speed = +val;
+				else if (key === 'LOOPSTART' && /^-?\d+$/.test(val)) loop_start = +val;
+				else if (key === 'LOOPLENGTH' && /^-?\d+$/.test(val)) loop_length = +val;
+			}
+			if (loop_start > 0 && loop_length > 1) { smp.flags |= C.CHN_LOOP; smp.loop_start = loop_start; smp.loop_end = loop_start + loop_length; }
+		} else if (m.type === 2 && m.data.length >= 12 && raw(m.data, 0, 4) === 'riff') { // APPLICATION "riff": a WAV chunk
+			const id = raw(m.data, 4, 4), fp = fp_open(m.data.subarray(12));
+			if (id === 'xtra') iff_read_xtra_chunk(fp, smp);
+			else if (id === 'smpl') iff_read_smpl_chunk(fp, smp);
+		}
+	}
+	// libFLAC output widened to 8, 16 or 32 bits, then csf_read_sample (32 -> 16)
+	const shift = r.bps <= 8 ? 8 - r.bps : r.bps <= 16 ? 16 - r.bps : -(r.bps - 16);
+	const sixteen = r.bps > 8, nch = r.channels, n = r.total;
+	const data = sixteen ? new Int16Array(n * nch) : new Int8Array(n * nch);
+	const scale = shift >= 0 ? 2 ** shift : 1, down = shift < 0 ? 2 ** -shift : 1;
+	for (let c = 0; c < nch; c++) {
+		const src = r.pcm[c];
+		for (let i = 0; i < n; i++) data[i * nch + c] = down > 1 ? Math.floor(src[i] / down) : src[i] * scale;
+	}
+	smp.flags |= (sixteen ? C.CHN_16BIT : 0) | (nch === 2 ? C.CHN_STEREO : 0);
+	smp.data = data;
+	app.csf_adjust_sample_loop(smp);
+	return 1;
+}
 export function load_native_sample(b, smp) {
 	return !!(au_load(b, smp) || read_iff(b, smp) || wav_load(b, smp, 1) || w64_load(b, smp, 1) || sbi_load(b, smp)
-		|| s3i_load(b, smp, 1) || brr_load_sample(b, smp));
+		|| s3i_load(b, smp, 1) || brr_load_sample(b, smp) || flac_load_sample(b, smp));
 }

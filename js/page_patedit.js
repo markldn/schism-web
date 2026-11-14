@@ -5,7 +5,7 @@ import { pattern_selection_system_paste_modplug } from './pattern-clipboard.js';
 import { app, provide } from './app.js';
 import * as C from './sndconst.js';
 import { status, tracker, PAGE, HELP, NEED_UPDATE, SONG_NEEDS_SAVE, CLASSIC_MODE, CRAYOLA_MODE,
-	INVERTED_PALETTE, DIALOG_OK } from './state.js';
+	INVERTED_PALETTE, DIALOG_OK, DIALOG_OK_CANCEL } from './state.js';
 import { draw_text, draw_text_len, draw_char, draw_box, BOX_THIN, BOX_THICK, BOX_INNER, BOX_INSET } from './vgamem.js';
 import { KEYSYM, KEYMOD, SCANCODE, KEY_PRESS, KEY_RELEASE, KEY_DRAG, NO_MODIFIER, MOUSE_NONE, MOUSE_CLICK,
 	MOUSE_DBLCLICK, MOUSE_SCROLL_UP, MOUSE_SCROLL_DOWN, numeric_key_event, kbd_get_note, kbd_char_to_hex,
@@ -26,6 +26,7 @@ import { current_song, song_get_pattern, song_get_pattern_buf, song_get_mode, MO
 	song_get_current_speed, song_get_current_tick, song_get_pattern_offset } from './song.js';
 import { midi, MIDI_TICK_QUANTIZE, MIDI_RECORD_NOTEOFF, MIDI_RECORD_VELOCITY, MIDI_PITCHBEND } from './midi.js';
 import { csf_get_num_patterns } from './csndfile.js';
+import { disko_writeout_sample, disko_multiwrite_samples } from './fmt/savers.js';
 
 const MAX_CHANNELS = 64;
 const ROW_IS_MAJOR = r => current_song.row_highlight_major !== 0 && r % current_song.row_highlight_major === 0;
@@ -883,7 +884,45 @@ export function update_current_pattern() {
 	draw_text(str_from_num(3, csf_get_num_patterns(current_song) - 1), 16, 6, 5, 0);
 }
 export const get_current_pattern = () => current_pattern;
+
+// disko.c: song_pattern_to_sample
+export function song_pattern_to_sample(pattern, split, bind) {
+	const song = current_song;
+	if (split && bind) { app.log_appendf(4, 'song_pattern_to_sample: internal error!'); return; }
+	if (pattern < 0 || pattern >= C.MAX_PATTERNS) return;
+	/* this is horrid */
+	for (let n = 1; n < C.MAX_SAMPLES; n++) {
+		const nm = song.samples[n].name || '';
+		if (nm.charCodeAt(23) !== 0xff || nm.charCodeAt(24) !== pattern) continue;
+		app.status_text_flash(`Pattern ${pattern} already linked to sample ${n}`);
+		return;
+	}
+	const smp = app.sample_get_current() || 1;
+	const done = () => { status.flags |= SONG_NEEDS_SAVE; app.set_page(PAGE.SAMPLE_LIST); };
+	const single = () => {
+		if (disko_writeout_sample(song, smp, pattern, bind)) done();
+		else app.status_text_flash('Error writing to sample');
+	};
+	if (split) {
+		/* Nothing to confirm, as this never overwrites samples */
+		if (disko_multiwrite_samples(song, smp, pattern)) done();
+		else app.status_text_flash('Error writing to samples');
+	} else if (!song.samples[smp].data) single();
+	else dialog_create(DIALOG_OK_CANCEL, 'This will replace the current sample.', single, null, 1, null);
+}
+// page_patedit.c: _pattern_update_magic (re-render a sample bound to the pattern being left)
+function _pattern_update_magic() {
+	for (let i = 1; i <= 99; i++) {
+		const s = current_song.samples[i];
+		if (!s || !s.name) continue;
+		if (s.name.charCodeAt(23) !== 0xff || s.name.charCodeAt(24) !== current_pattern) continue;
+		disko_writeout_sample(current_song, i, current_pattern, 1);
+		break;
+	}
+}
+
 export function set_current_pattern(n) {
+	if (!tracker.playback_tracing || !SONG_PLAYING()) _pattern_update_magic();
 	current_pattern = clamp(n, 0, 199);
 	const max_row_number = song_get_max_row_number_in_pattern(current_pattern);
 	if (current_row > max_row_number) current_row = max_row_number;
@@ -1574,7 +1613,7 @@ function pattern_editor_handle_ctrl_key(k) {
 	// eslint-disable-next-line no-fallthrough
 	case KEYSYM.o:
 		if (rel) return 1;
-		app.song_pattern_to_sample(current_pattern, !!(k.mod & KEYMOD.SHIFT), k.sym === KEYSYM.b);
+		song_pattern_to_sample(current_pattern, !!(k.mod & KEYMOD.SHIFT), k.sym === KEYSYM.b);
 		return 1;
 	case KEYSYM.v:
 		if (rel) return 1;
@@ -1940,8 +1979,58 @@ export function pattern_editor_load_page(page) {
 	});
 	recalculate_visible_area();
 }
+// page_patedit.c: cfg_save_patedit / cfg_load_patedit ("Pattern Editor" section)
+export function cfg_save_patedit() {
+	return { link_effect_column, draw_divisions, centralise_cursor, highlight_current_row, edit_copy_mask,
+		volume_percent, fast_volume_percent, fast_volume_mode, keyjazz_noteoff, keyjazz_write_noteoff,
+		keyjazz_repeat, keyjazz_capslock, mask_copy_search_mode, invert_home_end,
+		crayola_mode: status.flags & CRAYOLA_MODE ? 1 : 0,
+		track_view_scheme: Array.from(track_view_scheme, v => String.fromCharCode(v + 97)).join(''),
+		channel_multi: Array.from(channel_multi, v => v ? 'M' : '-').join('') };
+}
+export function cfg_load_patedit(c) {
+	if (!c || typeof c !== 'object') return;
+	const num = (v, d) => Number.isFinite(v) ? v | 0 : d;
+	link_effect_column = num(c.link_effect_column, 0);
+	draw_divisions = num(c.draw_divisions, 1);
+	centralise_cursor = num(c.centralise_cursor, 0);
+	highlight_current_row = num(c.highlight_current_row, 0);
+	edit_copy_mask = num(c.edit_copy_mask, MASK_NOTE | MASK_INSTRUMENT | MASK_VOLUME);
+	volume_percent = num(c.volume_percent, 100);
+	fast_volume_percent = num(c.fast_volume_percent, 67);
+	fast_volume_mode = num(c.fast_volume_mode, 0);
+	keyjazz_noteoff = num(c.keyjazz_noteoff, 0);
+	keyjazz_write_noteoff = num(c.keyjazz_write_noteoff, 0);
+	keyjazz_repeat = num(c.keyjazz_repeat, 1);
+	keyjazz_capslock = num(c.keyjazz_capslock, 0);
+	mask_copy_search_mode = num(c.mask_copy_search_mode, 0);
+	invert_home_end = num(c.invert_home_end, 0);
+	if (c.crayola_mode) status.flags |= CRAYOLA_MODE; else status.flags &= ~CRAYOLA_MODE;
+	/* "decode" the track view scheme */
+	const sch = typeof c.track_view_scheme === 'string' ? c.track_view_scheme : 'a';
+	let n = 0, r = 0;
+	for (; n < MAX_CHANNELS && n < sch.length; n++) {
+		const ch = sch.charCodeAt(n);
+		if (ch >= 97 && ch <= 122) r = ch - 97;
+		else if (ch >= 65 && ch <= 90) r = ch - 65;
+		else { app.log_appendf(4, 'Track view scheme corrupted; using default'); n = 0; r = 0; break; }
+		track_view_scheme[n] = r;
+	}
+	track_view_scheme.fill(r, n);
+	const cm = typeof c.channel_multi === 'string' ? c.channel_multi : '';
+	channel_multi.fill(0);
+	channel_multi_enabled = 0;
+	for (let i = 0; i < MAX_CHANNELS && i < cm.length; i++) {
+		channel_multi[i] = /[A-Za-z]/.test(cm[i]) ? 1 : 0;
+		if (channel_multi[i]) channel_multi_enabled = 1;
+	}
+	recalculate_visible_area();
+	if (current_song) pattern_editor_reposition();
+	if (status.current_page === PAGE.PATTERN_EDITOR) status.flags |= NEED_UPDATE;
+}
+
 pattern_editor_load_page(pages[PAGE.PATTERN_EDITOR]);
 
-provide({ pattern_editor_display_options, pattern_editor_length_edit, update_current_row, get_current_channel,
+provide({ cfg_save_patedit, cfg_load_patedit, song_pattern_to_sample, pattern_editor_display_options, pattern_editor_length_edit, update_current_row, get_current_channel,
 	set_current_channel, get_current_row, set_current_row, update_current_pattern, get_current_pattern,
 	set_current_pattern, play_song_from_mark, play_song_from_mark_orderpan, pattern_editor_reposition });

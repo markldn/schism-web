@@ -9,11 +9,12 @@ import { draw_text, draw_text_len, draw_char, draw_box, draw_fill_chars, vgamem_
 	BOX_THICK, BOX_THIN, BOX_INNER, BOX_INSET } from './vgamem.js';
 import { KEYSYM, KEYMOD, KEY_PRESS, KEY_RELEASE, NO_MODIFIER, MOUSE_NONE, MOUSE_CLICK, MOUSE_DBLCLICK,
 	MOUSE_SCROLL_UP, MOUSE_SCROLL_DOWN, kbd_get_note } from './keyboard.js';
-import { widget_create_other, MOUSE_SCROLL_LINES, str_from_num } from './widget.js';
+import { widget_create_other, widget_create_textentry, widget_create_numentry, widget_create_menutoggle, widget_create_thumbbar,
+	MOUSE_SCROLL_LINES, str_from_num } from './widget.js';
 import { dialog_create, dialog_create_custom, dialog_destroy } from './dialog.js';
 import { widget_create_button } from './widget.js';
 import { pages, set_page } from './page.js';
-import { current_song, blank_sample, song_keydown, song_keyup, song_stop_unlocked, song_toggle_multichannel_mode,
+import { current_song, blank_sample, song_update_playing_sample, song_keydown, song_keyup, song_stop_unlocked, song_toggle_multichannel_mode,
 	song_is_instrument_mode, song_get_instrument, song_copy_sample, KEYJAZZ_NOINST, KEYJAZZ_INST_FAKE, KEYJAZZ_CHAN_CURRENT } from './song.js';
 import { dmoz_read_directory, dmoz_read_file, dmoz_remove, dmoz_path_normal, dmoz_path_get_basename,
 	dmoz_path_get_parent, dmoz_import_files } from './dmoz.js';
@@ -21,10 +22,13 @@ import { dmoz_file_info, fmt_load_sample, fmt_decode_sample, fmt_load_instrument
 	TYPE_MODULE_MASK, TYPE_INST_MASK, TYPE_UNKNOWN, TYPE_SAMPLE_COMPR } from './fmt/info.js';
 import { song_create_load } from './fmt/loaders.js';
 import { cfg } from './page_loadmodule.js';
-import { csf_stop_sample, csf_init_instrument } from './csndfile.js';
+import { csf_stop_sample, csf_init_instrument, csf_allocate, csf_adjust_sample_loop } from './csndfile.js';
 import { draw_sample_data } from './sample-edit.js';
 import * as SE from './sample-edit.js';
 
+// dmoz.c: TITLE_DIRECTORY / TITLE_LIBRARY (the dots are CP437 char 154)
+const TITLE_DIRECTORY = '\x9a'.repeat(8) + 'Directory' + '\x9a'.repeat(8);
+const TITLE_LIBRARY = '\x9a'.repeat(9) + 'Library' + '\x9a'.repeat(9);
 const TYPE_DIRECTORY = 5, TYPE_IMPORT = -1, TYPE_LIB_ITEM = 0x30002;
 const sample_image = vgamem_ovl_alloc({ x1: 52, y1: 25, x2: 76, y2: 28 });
 
@@ -35,7 +39,7 @@ function make_browser(kind) {
 	function read_directory() {
 		st.flist = [];
 		if (st.lib) {
-			st.flist.push({ base: '..', title: '........Library........', type: TYPE_DIRECTORY, path: null });
+			st.flist.push({ base: '..', title: TITLE_DIRECTORY, type: TYPE_DIRECTORY, path: null });
 			const song = st.lib.song;
 			if (kind === 'sample') {
 				for (let n = 1; n < song.samples.length - 1; n++) {
@@ -58,19 +62,91 @@ function make_browser(kind) {
 			return;
 		}
 		const listing = dmoz_read_directory(cfg[dir_key]);
-		for (const d of listing.dirs) st.flist.push({ base: d.base, title: '........Directory........', type: TYPE_DIRECTORY, path: d.path });
+		for (const d of listing.dirs) st.flist.push({ base: d.base, title: TITLE_DIRECTORY, type: TYPE_DIRECTORY, path: d.path });
 		st.flist.push({ base: '', title: '[Import from disk]', type: TYPE_IMPORT, path: null });
 		for (const f of listing.files) {
 			const info = dmoz_file_info(f.base, f.data);
 			let title = info.title || f.base;
-			if (info.type & TYPE_MODULE_MASK) title = '.........Library.........';
+			if (info.type & TYPE_MODULE_MASK) title = TITLE_LIBRARY;
 			st.flist.push({ ...f, ...info, title });
 		}
 		st.current_file = Math.min(st.current_file, st.flist.length - 1);
 	}
+	// the editable preview fields (page_loadsample.c widgets 1..13); edits change the
+	// preview in the hidden slot 0 only, as upstream
+	const current_filename = { value: '' };
+	const loop_states = ['Off', 'On Forwards', 'On Ping Pong'];
+	const ws = kind !== 'sample' ? [] : [
+		widget_create_textentry(64, 13, 13, 1, 2, 9, () => handle_rename_op(), current_filename, 12),
+		widget_create_numentry(64, 14, 7, 1, 3, 9, () => handle_load_update(), 0, 9999999, { value: 0 }),
+		widget_create_menutoggle(64, 15, 2, 4, 0, 9, 9, () => handle_load_update(), loop_states),
+		widget_create_numentry(64, 16, 7, 3, 5, 9, () => handle_load_update(), 0, 9999999, { value: 0 }),
+		widget_create_numentry(64, 17, 7, 4, 6, 9, () => handle_load_update(), 0, 9999999, { value: 0 }),
+		widget_create_menutoggle(64, 18, 5, 7, 0, 9, 9, () => handle_load_update(), loop_states),
+		widget_create_numentry(64, 19, 7, 6, 8, 9, () => handle_load_update(), 0, 9999999, { value: 0 }),
+		widget_create_numentry(64, 20, 7, 7, 9, 9, () => handle_load_update(), 0, 9999999, { value: 0 }),
+		widget_create_thumbbar(63, 33, 9, 8, 10, 0, () => handle_load_update(), 0, 64),
+		widget_create_thumbbar(63, 34, 9, 9, 11, 0, () => handle_load_update(), 0, 64),
+		widget_create_thumbbar(63, 37, 9, 10, 12, 0, () => handle_load_update(), 0, 64),
+		widget_create_thumbbar(63, 38, 9, 11, 13, 0, () => handle_load_update(), 0, 32),
+		widget_create_thumbbar(63, 39, 9, 12, 13, 0, () => handle_load_update(), 0, 255),
+	];
+	const W = n => ws[n - 1];
+	function file_list_reposition_widgets() {
+		if (!ws.length) return;
+		const f = st.flist[st.current_file];
+		const smp = f ? preview_sample() : null;
+		current_filename.value = ((smp && smp.filename) || (f && f.base) || '').slice(0, 12);
+		W(1).d.firstchar = 0;
+		W(1).d.cursor_pos = current_filename.value.length;
+		const fl = smp ? smp.flags : 0;
+		W(2).d.value = smp ? smp.c5speed : 0;
+		W(3).d.state = fl & C.CHN_PINGPONGLOOP ? 2 : fl & C.CHN_LOOP ? 1 : 0;
+		W(4).d.value = smp ? smp.loop_start : 0;
+		W(5).d.value = smp ? smp.loop_end : 0;
+		W(6).d.state = fl & C.CHN_PINGPONGSUSTAIN ? 2 : fl & C.CHN_SUSTAINLOOP ? 1 : 0;
+		W(7).d.value = smp ? smp.sustain_start : 0;
+		W(8).d.value = smp ? smp.sustain_end : 0;
+		W(9).d.value = smp ? Math.max(0, Math.min(64, smp.volume >> 2)) : (f ? 0 : 64);
+		W(10).d.value = smp ? smp.global_volume : (f ? 0 : 64);
+		W(11).d.value = smp ? smp.vib_speed : 0;
+		W(12).d.value = smp ? smp.vib_depth : 0;
+		W(13).d.value = smp ? smp.vib_rate : 0;
+	}
+	function handle_rename_op() { preview_sample(); }
+	function handle_load_update() {
+		const s = preview_sample();
+		if (!s) return;
+		let changed = 0;
+		const copy = (v, key) => { if (s[key] !== v) { s[key] = v; changed = 1; } };
+		copy(W(2).d.value, 'c5speed');
+		copy(W(4).d.value, 'loop_start');
+		copy(W(5).d.value, 'loop_end');
+		copy(W(7).d.value, 'sustain_start');
+		copy(W(8).d.value, 'sustain_end');
+		// s.volume is 0..256, the UI is 0..64: only push back a value that differs from the conversion
+		if ((s.volume >> 2) !== W(9).d.value) { s.volume = W(9).d.value << 2; changed = 1; }
+		copy(W(10).d.value, 'global_volume');
+		copy(W(11).d.value, 'vib_rate');
+		copy(W(12).d.value, 'vib_depth');
+		copy(W(13).d.value, 'vib_speed');
+		const loopflags = (state, plain, pingpong) => {
+			const want = state === 0 ? 0 : state === 1 ? plain : pingpong;
+			if ((s.flags & (plain | pingpong)) !== want) { s.flags = (s.flags & ~(plain | pingpong)) | want; changed = 1; }
+		};
+		loopflags(W(3).d.state, C.CHN_LOOP, C.CHN_LOOP | C.CHN_PINGPONGLOOP);
+		loopflags(W(6).d.state, C.CHN_SUSTAINLOOP, C.CHN_SUSTAINLOOP | C.CHN_PINGPONGSUSTAIN);
+		if (changed) {
+			st.fake.changed = 1;
+			csf_adjust_sample_loop(s);
+			const slot = current_song.samples[0];
+			if (slot.data === s.data) { Object.assign(slot, s); song_update_playing_sample(0); }
+		}
+	}
 	function reposition() {
 		if (st.current_file < st.top_file) st.top_file = st.current_file;
 		else if (st.current_file > st.top_file + 34) st.top_file = st.current_file - 34;
+		file_list_reposition_widgets();
 		status.flags |= NEED_UPDATE;
 	}
 	function type_color(f) {
@@ -101,12 +177,13 @@ function make_browser(kind) {
 		if (!f) return null;
 		if (st.fake && st.fake.file === f) return st.fake.smp;
 		let smp = null;
-		if (f.type === TYPE_LIB_ITEM && kind === 'sample') smp = f.smp;
-		else if (f.data && !(f.type & TYPE_MODULE_MASK) && !(f.type & TYPE_INST_MASK) && f.type !== TYPE_SAMPLE_COMPR) {
+		if (f.type === TYPE_LIB_ITEM && kind === 'sample') smp = { ...f.smp };
+		else if (f.data && !(f.type & TYPE_MODULE_MASK) && !(f.type & TYPE_INST_MASK)) {
+			// compressed formats only preview when decoded natively (FLAC); the rest need Enter
 			smp = blank_sample({});
 			if (!fmt_load_sample(f.base, f.data, smp)) smp = null;
 		}
-		st.fake = { file: f, smp };
+		st.fake = { file: f, smp, changed: 0 };
 		return smp;
 	}
 	function draw_const() {
@@ -126,26 +203,13 @@ function make_browser(kind) {
 		const f = st.flist[st.current_file];
 		if (f) {
 			const s = kind === 'sample' ? preview_sample() : null;
-			if (s) {
-				draw_text_len(s.filename || '', 13, 64, 13, 2, 0);
-				draw_text_len(String(s.c5speed).padStart(7, '0'), 13, 64, 14, 2, 0);
-				draw_text_len(s.flags & C.CHN_LOOP ? (s.flags & C.CHN_PINGPONGLOOP ? 'On Ping Pong' : 'On Forwards') : 'Off', 13, 64, 15, 2, 0);
-				draw_text_len(String(s.loop_start).padStart(7, '0'), 13, 64, 16, 2, 0);
-				draw_text_len(String(s.loop_end).padStart(7, '0'), 13, 64, 17, 2, 0);
-				draw_text_len(s.flags & C.CHN_SUSTAINLOOP ? (s.flags & C.CHN_PINGPONGSUSTAIN ? 'On Ping Pong' : 'On Forwards') : 'Off', 13, 64, 18, 2, 0);
-				draw_text_len(String(s.sustain_start).padStart(7, '0'), 13, 64, 19, 2, 0);
-				draw_text_len(String(s.sustain_end).padStart(7, '0'), 13, 64, 20, 2, 0);
-				draw_text_len(s.data ? `${s.flags & C.CHN_16BIT ? 16 : 8} bit${s.flags & C.CHN_STEREO ? ' Stereo' : ''}` : 'No sample', 13, 64, 21, 2, 0);
-				draw_text_len(String(s.length).padStart(7, '0'), 13, 64, 22, 2, 0);
-				draw_text(String(s.volume >> 2).padStart(3, '0'), 63, 33, 2, 0);
-				draw_text(String(s.global_volume).padStart(3, '0'), 63, 34, 2, 0);
-				draw_text(String(s.vib_speed).padStart(3, '0'), 63, 37, 2, 0);
-				draw_text(String(s.vib_depth).padStart(3, '0'), 63, 38, 2, 0);
-				draw_text(String(s.vib_rate).padStart(3, '0'), 63, 39, 2, 0);
-				draw_sample_data(sample_image, s);
-			} else if (f.type === TYPE_SAMPLE_COMPR) {
-				draw_text_len('Press Enter', 13, 64, 21, 2, 0);
-				draw_text_len('to decode', 13, 64, 22, 2, 0);
+			if (kind === 'sample') {
+				draw_text_len(String(s ? s.length : 0).padStart(7, '0'), 13, 64, 22, 2, 0);
+				if (f.type === TYPE_SAMPLE_COMPR && !s) {
+					draw_text_len('Press Enter', 13, 64, 21, 2, 0);
+				} else if (!s || (!s.length && !s.filename && !s.flags)) draw_text_len('No sample', 13, 64, 21, 2, 0);
+				else draw_text_len(`${s.flags & C.CHN_16BIT ? 16 : 8} bit${s.flags & C.CHN_STEREO ? ' Stereo' : ''}`, 13, 64, 21, 2, 0);
+				if (s) draw_sample_data(sample_image, s);
 			}
 			draw_text_len(f.description || (f.type === TYPE_DIRECTORY ? 'Directory' : f.type === TYPE_IMPORT ? 'Browser file picker' : 'Unknown format'), 18, 59, 44, 5, 0);
 			if (f.size !== undefined && f.type !== TYPE_DIRECTORY) draw_text(String(f.size).padStart(7, '0'), 59, 45, 5, 0);
@@ -272,6 +336,19 @@ function make_browser(kind) {
 			reposition();
 			return;
 		}
+		if (kind === 'sample' && (f.type & TYPE_INST_MASK)) {
+			// an instrument file in the sample browser is a library of its samples (dmoz_read_sample_library)
+			const res = fmt_load_instrument(f.base, f.data, () => blank_sample({}));
+			if (!res || !res.samples.length) { dialog_create(DIALOG_OK, 'Could not open library', null, null, 0, null); return; }
+			const song = csf_allocate();
+			res.samples.forEach((smp, i) => { if (i + 1 < song.samples.length - 1) song.samples[i + 1] = smp; });
+			st.lib = { song, base: f.base, mtime: f.mtime };
+			st.current_file = st.top_file = 0;
+			read_directory();
+			if (st.flist.length > 1) st.current_file = 1;
+			reposition();
+			return;
+		}
 		if (kind === 'sample') load_into_slot(f);
 		else load_instrument_into_slot(f);
 	}
@@ -354,6 +431,13 @@ function make_browser(kind) {
 		else if (k.mouse === MOUSE_DBLCLICK) { handle_enter_key(); return 1; }
 		else if (k.state === KEY_RELEASE) return 1;
 		new_file = Math.max(0, Math.min(new_file, st.flist.length - 1));
+		if (new_file !== st.current_file && st.fake && st.fake.changed) {
+			const will_move_to = new_file;
+			dialog_create(DIALOG_YES_NO, 'Discard Changes?', () => {
+				st.fake = null; st.search_pos = -1; st.current_file = will_move_to; reposition();
+			}, null, 0, null);
+			return 1;
+		}
 		if (new_file !== st.current_file) {
 			song_keyup(KEYJAZZ_NOINST, KEYJAZZ_NOINST, last_note);
 			st.search_pos = -1;
@@ -383,7 +467,7 @@ function make_browser(kind) {
 		read_directory();
 		reposition();
 	}
-	return { st, read_directory, file_list_draw, file_list_handle_key, draw_const, set_page_cb, page_handle_key };
+	return { st, ws, read_directory, file_list_draw, file_list_handle_key, draw_const, set_page_cb, page_handle_key };
 }
 
 const clone_env = e => ({ ...e, ticks: new Int32Array(e.ticks), values: new Uint8Array(e.values) });
@@ -409,10 +493,10 @@ export function song_create_host_instrument(smp) {
 
 function setup(page_id, kind, title, help) {
 	const b = make_browser(kind);
-	const w = widget_create_other(0, b.file_list_handle_key, null, b.file_list_draw);
+	const w = widget_create_other(b.ws.length ? 1 : 0, b.file_list_handle_key, null, b.file_list_draw);
 	Object.assign(w, { x: 6, y: 13, width: 44, height: 35 });
 	Object.assign(pages[page_id], { title, draw_const: b.draw_const, set_page: b.set_page_cb, handle_key: b.page_handle_key,
-		widgets: [w], total_widgets: 1, help_index: help, ported: true });
+		widgets: [w, ...b.ws], total_widgets: 1 + b.ws.length, help_index: help, ported: true });
 	return b;
 }
 setup(PAGE.LOAD_SAMPLE, 'sample', 'Load Sample', HELP.SAMPLE_LIST);

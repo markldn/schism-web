@@ -88,12 +88,14 @@ function add_parent_dirs(p) {
 
 export function dmoz_is_dir(p) { return dirs.has(dmoz_path_normal(p)); }
 export function dmoz_file_exists(p) { return files.has(dmoz_path_normal(p)); }
-// files are kept as stored; packed ones (gzip, MMCMP) get an unpacked view as slurp.c does
+// files are kept as stored; packed ones (gzip, bzip2, xz, zstd, MMCMP) get an unpacked view as slurp.c does
 const view = f => f.unpacked || f.data;
 function unpack_entry(f) {
 	const m = mmcmp_unpack(f.data);
 	if (m) { f.unpacked = m; return Promise.resolve(); }
-	if (f.data[0] !== 0x1f || f.data[1] !== 0x8b) return Promise.resolve();
+	const d = f.data, packed = (d[0] === 0x1f && d[1] === 0x8b) /* gzip */ || (d[0] === 0x42 && d[1] === 0x5a && d[2] === 0x68) /* bzip2 */
+		|| (d[0] === 0xfd && d[1] === 0x37 && d[2] === 0x7a && d[3] === 0x58) /* xz */ || (d[0] === 0x28 && d[1] === 0xb5 && d[2] === 0x2f && d[3] === 0xfd) /* zstd */;
+	if (!packed) return Promise.resolve();
 	return slurp_unpack(f.data).then(u => {
 		if (u) { f.unpacked = u; status.flags |= DIR_MODULES_CHANGED | DIR_SAMPLES_CHANGED | DIR_INSTRUMENTS_CHANGED | NEED_UPDATE; }
 	});

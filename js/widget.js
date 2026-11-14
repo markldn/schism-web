@@ -14,6 +14,7 @@ import { KEYSYM, KEYMOD, NO_MODIFIER, KEY_PRESS, KEY_RELEASE, KEY_DRAG,
 	MOUSE_NONE, MOUSE_CLICK, MOUSE_DBLCLICK, MOUSE_SCROLL_UP, MOUSE_SCROLL_DOWN,
 	MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT, numeric_key_event } from "./keyboard.js";
 import { app, provide } from "./app.js";
+import { utf_to_itf } from "./charset.js";
 
 export const WIDGET_TOGGLE = 0, WIDGET_MENUTOGGLE = 1, WIDGET_BUTTON = 2, WIDGET_TOGGLEBUTTON = 3,
 	WIDGET_TEXTENTRY = 4, WIDGET_NUMENTRY = 5, WIDGET_THUMBBAR = 6, WIDGET_BITSET = 7, WIDGET_PANBAR = 8,
@@ -233,13 +234,11 @@ export function widget_textentry_add_char(w, c) {
 	return 1;
 }
 
-/* `text` is typed (Unicode) text. TODO(port): charset.c UTF-8 -> ITF mapping;
- * for now only characters that exist unchanged in the ITF font (ASCII) pass. */
+/* `text` is typed (Unicode) text, converted to the tracker font's charset (ITF) */
 export function widget_textentry_add_text(w, text) {
 	if (!text) return 0;
-	for (const ch of text) {
-		const c = ch.codePointAt(0);
-		if (c < 32 || c > 126) return 0;
+	for (const c of utf_to_itf(text)) {
+		if (!c) break;
 		if (!widget_textentry_add_char(w, c)) return 0;
 	}
 	return 1;

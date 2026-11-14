@@ -5,6 +5,9 @@ import * as C from '../sndconst.js';
 import { csf_get_num_orders, csf_get_num_instruments, csf_get_num_samples, csf_get_num_patterns,
 	csf_pattern_is_empty, csf_export_s3m_effect, csf_allocate, csf_set_current_order } from '../csndfile.js';
 import { finetune_table } from '../gen/tables.js';
+import { csf_destroy_sample, csf_loop_pattern, csf_first_blank_sample } from '../csndfile.js';
+import { read_sample, fp_open } from './loaders.js';
+import { flac_encode } from './flac.js';
 
 // disko_t: a growable little-endian writer
 export class Disko {
@@ -435,7 +438,8 @@ export function fmt_raw_save_sample(smp) {
 // disko.c: disko_export_song. Renders the song once through with the
 // diskwriter settings (all voices, no backward jumps), into one stream or one
 // per channel (multi-write); returns [{ channel, pcm (Uint8Array, 16-bit LE) }].
-export async function song_export_render(song, multi, rate = 44100, progress) {
+// disko.c: _export_setup (shadow the song with diskwriter settings)
+function export_setup(song, rate) {
 	const work = csf_allocate();
 	for (const k of Object.keys(song)) if (!['voices', 'voice_mix', 'mix_buffer'].includes(k)) work[k] = song[k];
 	work.opl = null; work.opl_to_chan = null; work.opl_from_chan = null; // a fresh OPL chip, as GM_Reset/OPL setup do
@@ -449,6 +453,11 @@ export async function song_export_render(song, multi, rate = 44100, progress) {
 	work.flags &= ~(C.SONG_PAUSED | C.SONG_PATTERNLOOP | C.SONG_ENDREACHED);
 	work.stop_at_order = work.stop_at_row = -1;
 	work.max_voices = 256;
+	work.multi_write = null;
+	return { work, channels };
+}
+export async function song_export_render(song, multi, rate = 44100, progress) {
+	const { work, channels } = export_setup(song, rate);
 	const outs = Array.from({ length: multi ? C.MAX_CHANNELS : 1 }, () => ({ chunks: [], len: 0 }));
 	if (multi) work.multi_write = outs.map(o => ({ buffer: new Int32Array(work.mix_buffer.length), used: 0, data: o,
 		write(d, bytes, n) { d.chunks.push(bytes.slice(0, n)); d.len += n; },
@@ -751,14 +760,49 @@ export const song_save_formats = [
 	{ label: 'S3M', ext: 's3m', save: fmt_s3m_save_song },
 	{ label: 'MOD', ext: 'mod', save: fmt_mod_save_song },
 ];
-// audio_loadsave.c: song_export_formats (FLAC left out: no encoder in the browser)
+// audio_loadsave.c: song_export_formats
+// fmt/flac.c: sample save and song export. Metadata as upstream: APPLICATION "riff"
+// blocks with the WAV xtra/smpl chunks (samples only) and a VORBIS_COMMENT.
+function flac_vorbis_comment(rate, title) {
+	const enc = new TextEncoder(), vendor = enc.encode('Schism Tracker');
+	const comments = [`SAMPLERATE=${rate}`, `ENCODER=${VERSION_STRING}`];
+	if (title) comments.push(`TITLE=${title}`);
+	const fp = new Disko();
+	fp.u32(vendor.length); fp.write(vendor); fp.u32(comments.length);
+	for (const c of comments) { const b = enc.encode(c); fp.u32(b.length); fp.write(b); }
+	return { type: 4, data: fp.bytes() };
+}
+function flac_riff_block(write) {
+	const fp = new Disko();
+	fp.str('riff', 4); write(fp);
+	return { type: 2, data: fp.bytes() };
+}
+export function fmt_flac_save_sample(smp) {
+	if (smp.flags & C.CHN_ADLIB) return null;
+	const nch = smp.flags & C.CHN_STEREO ? 2 : 1, bits = smp.flags & C.CHN_16BIT ? 16 : 8, n = smp.length;
+	const chans = Array.from({ length: nch }, () => new Int32Array(n));
+	if (smp.data) for (let i = 0; i < n; i++) for (let c = 0; c < nch; c++) chans[c][i] = smp.data[i * nch + c];
+	const name = (smp.name || '').replace(/\0.*$/s, '');
+	return flac_encode(chans, bits, Math.min(Math.max(smp.c5speed, 1), 655350),
+		[flac_riff_block(fp => write_xtra_chunk(fp, smp)), flac_riff_block(fp => write_smpl_chunk(fp, smp)), flac_vorbis_comment(smp.c5speed, name)]);
+}
+export function flac_export_bytes(pcm, channels, rate, title) {
+	const n = Math.trunc(pcm.length / (2 * channels));
+	const dv = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+	const chans = Array.from({ length: channels }, () => new Int32Array(n));
+	for (let i = 0; i < n; i++) for (let c = 0; c < channels; c++) chans[c][i] = dv.getInt16((i * channels + c) * 2, true);
+	return flac_encode(chans, 16, rate, [flac_vorbis_comment(rate, title)]);
+}
+
 export const song_export_formats = [
 	{ label: 'WAV', name: 'WAV', ext: '.wav', multi: 0, write: wav_export_bytes },
 	{ label: 'MWAV', name: 'WAV multi-write', ext: '.wav', multi: 1, write: wav_export_bytes },
 	{ label: 'AIFF', name: 'Audio IFF', ext: '.aiff', multi: 0, write: aiff_export_bytes },
 	{ label: 'MAIFF', name: 'Audio IFF multi-write', ext: '.aiff', multi: 1, write: aiff_export_bytes },
+	{ label: 'FLAC', name: 'Free Lossless Audio Codec', ext: '.flac', multi: 0, write: flac_export_bytes },
+	{ label: 'MFLAC', name: 'Free Lossless Audio Codec multi-write', ext: '.flac', multi: 1, write: flac_export_bytes },
 ];
-// audio_loadsave.c: sample_save_formats (FLAC is left out: no encoder in the browser)
+// audio_loadsave.c: sample_save_formats
 export const sample_save_formats = [
 	{ label: 'ITS', name: 'Impulse Tracker', ext: '.its', save: fmt_its_save_sample },
 	{ label: 'S3I', name: 'Scream Tracker', ext: '.s3i', save: fmt_s3i_save_sample },
@@ -766,7 +810,137 @@ export const sample_save_formats = [
 	{ label: 'AIFF', name: 'Audio IFF', ext: '.aiff', save: fmt_aiff_save_sample },
 	{ label: 'AU', name: 'Sun/NeXT', ext: '.au', save: fmt_au_save_sample },
 	{ label: 'WAV', name: 'WAV', ext: '.wav', save: fmt_wav_save_sample },
+	{ label: 'FLAC', name: 'Free Lossless Audio Codec', ext: '.flac', save: fmt_flac_save_sample },
 	{ label: 'RAW', name: 'Raw', ext: '.raw', save: fmt_raw_save_sample },
+];
+
+// fmt/xi.c: fmt_xi_save_instrument
+export function fmt_xi_save_instrument(song, ins) {
+	const map = new Int32Array(255).fill(-1), invmap = [], snum = new Uint8Array(96);
+	for (let j = 0; j < 96; j++) {
+		const o = ins.sample_map[j + 12];
+		if (o > 0 && o < 255 && map[o] === -1) { map[o] = invmap.length; invmap.push(o); }
+		snum[j] = map[o] & 0xff;
+	}
+	if (invmap.length < 1) return null;
+	const f = ins.flags, fp = new Disko();
+	fp.str('Extended Instrument: ', 0x15);
+	fp.str(ins.name || '', 0x16);
+	fp.u8(0x1a);
+	fp.str('Schism Tracker', 0x14);
+	fp.u16(0x0102);
+	fp.write(snum);
+	const vnum = Math.min(ins.vol_env.nodes, 12), pnum = Math.min(ins.pan_env.nodes, 12);
+	for (let k = 0; k < 12; k++) { fp.u16(k < vnum ? ins.vol_env.ticks[k] : 0); fp.u16(k < vnum ? ins.vol_env.values[k] : 0); }
+	for (let k = 0; k < 12; k++) { fp.u16(k < pnum ? ins.pan_env.ticks[k] : 0); fp.u16(k < pnum ? ins.pan_env.values[k] : 0); }
+	fp.u8(vnum); fp.u8(pnum);
+	fp.u8(ins.vol_env.sustain_start); fp.u8(ins.vol_env.loop_start); fp.u8(ins.vol_env.loop_end);
+	fp.u8(ins.pan_env.sustain_start); fp.u8(ins.pan_env.loop_start); fp.u8(ins.pan_env.loop_end);
+	fp.u8((f & C.ENV_VOLUME ? 1 : 0) | (f & C.ENV_VOLSUSTAIN ? 2 : 0) | (f & C.ENV_VOLLOOP ? 4 : 0));
+	fp.u8((f & C.ENV_PANNING ? 1 : 0) | (f & C.ENV_PANSUSTAIN ? 2 : 0) | (f & C.ENV_PANLOOP ? 4 : 0));
+	// vibrato from the first sample
+	const s0 = song.samples[invmap[0]];
+	const vibrate = Math.min(s0.vib_speed, 63), vibdepth = Math.min(s0.vib_depth, 15);
+	let vibsweep = 0;
+	if (vibrate | vibdepth) {
+		if (s0.vib_rate) vibsweep = Math.max(0, Math.min(255, Math.floor((s0.vib_depth * 256 + (s0.vib_rate >> 1)) / s0.vib_rate)));
+		else vibsweep = 255;
+	}
+	fp.u8(s0.vib_type); fp.u8(vibsweep); fp.u8(vibdepth); fp.u8(vibrate);
+	fp.u16(0); // volfade
+	fp.str('ILiveInAGiantBucket', 0x16);
+	fp.u16(invmap.length);
+	for (const o of invmap) {
+		const smp = song.samples[o];
+		let samplen = smp.length, loopstart = smp.loop_start, looplen = smp.loop_end - smp.loop_start, type = 0;
+		if (smp.flags & C.CHN_PINGPONGLOOP) type |= 0x03; else if (smp.flags & C.CHN_LOOP) type |= 0x01;
+		if (smp.flags & C.CHN_16BIT) { type |= 0x10; looplen *= 2; loopstart *= 2; samplen *= 2; }
+		if (smp.flags & C.CHN_STEREO) { type |= 0x20; looplen *= 2; loopstart *= 2; samplen *= 2; }
+		let pan;
+		if (f & C.ENV_SETPANNING) pan = ins.panning;
+		else if (smp.flags & C.CHN_PANNING) pan = smp.panning;
+		else pan = 0x80;
+		const transp = app.frequency_to_transpose(smp.c5speed);
+		fp.u32(samplen); fp.u32(loopstart); fp.u32(looplen);
+		fp.u8(smp.volume >> 2); fp.u8(transp % 128); fp.u8(type); fp.u8(pan); fp.u8(Math.trunc(transp / 128)); fp.u8(0);
+		fp.str(smp.name || '', 22);
+	}
+	for (const o of invmap) {
+		const smp = song.samples[o];
+		if (smp.data) csf_write_sample(fp, smp, C.SF_LE | C.SF_PCMD | (smp.flags & C.CHN_16BIT ? C.SF_16 : C.SF_8) | (smp.flags & C.CHN_STEREO ? C.SF_SS : C.SF_M));
+	}
+	return fp.bytes();
+}
+
+// disko.c: pattern to sample (Ctrl-B / Shift-Ctrl-B / Ctrl-Shift-... in the pattern editor)
+const disko_output_rate = 44100;
+// close_and_bind: read the rendered 16-bit PCM into the sample
+function close_and_bind(song, pcm, sample, channels) {
+	const bps = channels * 2;
+	csf_destroy_sample(song, song.samples.indexOf(sample));
+	sample.length = Math.trunc(pcm.length / bps);
+	sample.c5speed = disko_output_rate;
+	sample.volume = 64 * 4;
+	sample.global_volume = 64;
+	sample.panning = 32 * 4;
+	sample.flags &= ~(C.CHN_16BIT | C.CHN_STEREO);
+	read_sample(sample, C.SF_LE | (channels === 2 ? C.SF_SI : C.SF_M) | C.SF_PCMS | C.SF_16, fp_open(pcm));
+}
+const join = (chunks, len) => { const out = new Uint8Array(len); let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; } return out; };
+// samples are named "Pattern 000"; a bound one carries 0xff, pattern at name[23..24]
+function pat_name(text, bind, pattern) {
+	let name = text.slice(0, 25);
+	if (bind) name = name.padEnd(23, '\0').slice(0, 23) + '\xff' + String.fromCharCode(pattern);
+	return name;
+}
+export function disko_writeout_sample(song, smpnum, pattern, dobind) {
+	if (smpnum < 1 || smpnum >= C.MAX_SAMPLES) return 0;
+	const { work, channels } = export_setup(song, disko_output_rate);
+	csf_loop_pattern(work, pattern, 0);
+	const bps = channels * 2, chunks = [], buf = new Uint8Array(4096 * bps);
+	let len = 0;
+	do {
+		const n = app.csf_read(work, buf, buf.length);
+		chunks.push(buf.slice(0, n * bps)); len += n * bps;
+		if (len >= C.MAX_SAMPLE_LENGTH * bps) { len = C.MAX_SAMPLE_LENGTH * bps; work.flags |= C.SONG_ENDREACHED; }
+		if (!n) break;
+	} while (!(work.flags & C.SONG_ENDREACHED));
+	const sample = song.samples[smpnum];
+	close_and_bind(song, join(chunks, len).subarray(0, len), sample, channels);
+	sample.name = pat_name(`Pattern ${String(pattern).padStart(3, '0')}`, dobind, pattern);
+	return 1;
+}
+export function disko_multiwrite_samples(song, firstsmp, pattern) {
+	let smpnum = Math.max(1, Math.min(C.MAX_SAMPLES, firstsmp));
+	const { work, channels } = export_setup(song, disko_output_rate);
+	csf_loop_pattern(work, pattern, 0);
+	const outs = Array.from({ length: C.MAX_CHANNELS }, () => ({ chunks: [], len: 0 }));
+	work.multi_write = outs.map(o => ({ buffer: new Int32Array(work.mix_buffer.length), used: 0, data: o,
+		write(d, bytes, n) { d.chunks.push(bytes.slice(0, n)); d.len += n; },
+		silence(d, n) { d.chunks.push(new Uint8Array(n)); d.len += n; } }));
+	const bps = channels * 2, buf = new Uint8Array(4096 * bps);
+	let smpsize = 0;
+	do {
+		const n = app.csf_read(work, buf, buf.length);
+		smpsize += n;
+		if (smpsize >= C.MAX_SAMPLE_LENGTH) { smpsize = C.MAX_SAMPLE_LENGTH; break; }
+		if (!n) break;
+	} while (!(work.flags & C.SONG_ENDREACHED));
+	for (let n = 0; n < C.MAX_CHANNELS; n++) {
+		if (!work.multi_write[n].used) continue;
+		const o = outs[n], len = Math.min(o.len, smpsize * bps);
+		smpnum = csf_first_blank_sample(song, smpnum);
+		if (smpnum < 0) break;
+		const sample = song.samples[smpnum];
+		close_and_bind(song, join(o.chunks, o.len).subarray(0, len), sample, channels);
+		sample.name = `Pattern ${String(pattern).padStart(3, '0')}, channel ${String(n + 1).padStart(2, '0')}`.slice(0, 25);
+	}
+	return 1;
+}
+// audio_loadsave.c: instrument_save_formats
+export const instrument_save_formats = [
+	{ label: 'ITI', name: 'Impulse Tracker', ext: '.iti', save: fmt_iti_save_instrument },
+	{ label: 'XI', name: 'Fasttracker II', ext: '.xi', save: fmt_xi_save_instrument },
 ];
 
 provide({ fmt_s3m_save_song, fmt_mod_save_song, fmt_it_save_song, fmt_its_save_sample, fmt_iti_save_instrument, fmt_wav_save_sample, fmt_raw_save_sample, song_export_wav });

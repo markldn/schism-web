@@ -61,8 +61,8 @@ Song-length calculation now uses copied inline playback state and the tick engin
 |---|---:|---|---|
 | schism/atomic.c | 508 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/audio_loadsave.c | 1172 | partial | js/song.js, js/page_loadmodule.js: load/save/export, sample+instrument load/save |
-| schism/audio_playback.c | 2154 | ported | js/song.js: transport, keyjazz, mute/solo, AudioWorklet output, MIDI/OPL hooks |
-| schism/charset.c | 1800 | todo |  |
+| schism/audio_playback.c | 2154 | ported | js/song.js: transport, keyjazz, mute/solo, AudioWorklet output, audio_reinit, MIDI/OPL hooks |
+| schism/charset.c | 1800 | partial | js/charset.js + js/gen/charset.js: digraphs, Unicode -> CP437 / ITF for text entry; the iconv machinery is the browser's |
 | schism/charset_stdlib.c | 505 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/charset_unicode.c | 77 | todo |  |
 | schism/clippy.c | 251 | replaced | js/clippy.js: browser paste events, async clipboard reads with internal fallback; ModPlug decoder in js/pattern-clipboard.js |
@@ -70,7 +70,7 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | schism/config.c | 553 | replaced | js/page_config.js: localStorage |
 | schism/cpu.c | 170 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | schism/dialog.c | 551 | ported | js/dialog.js |
-| schism/disko.c | 1187 | replaced | js/fmt/savers.js: WAV/AIFF and per-channel browser export |
+| schism/disko.c | 1187 | replaced | js/fmt/savers.js: WAV/AIFF and per-channel browser export, pattern to sample (single, split, bound) |
 | schism/dmoz.c | 2409 | replaced | js/dmoz.js: IndexedDB virtual disk, import/download |
 | schism/events.c | 214 | replaced | DOM events in js/main.js + js/keyboard.js |
 | schism/fakemem.c | 139 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
@@ -92,20 +92,20 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | schism/page_blank.c | 55 | todo |  |
 | schism/page_config.c | 424 | ported | js/page_config.js |
 | schism/page_help.c | 310 | ported | js/page_misc.js |
-| schism/page_info.c | 1354 | ported | js/page_info.js (layout not saved) |
+| schism/page_info.c | 1354 | ported | js/page_info.js (layout saved with the configuration) |
 | schism/page_instruments.c | 3124 | ported | js/page_instruments.js |
 | schism/page_loadinst.c | 550 | ported | js/page_loadsample.js |
 | schism/page_loadmodule.c | 1202 | ported | js/page_loadmodule.js |
-| schism/page_loadsample.c | 1068 | partial | js/page_loadsample.js: preview widgets read-only |
+| schism/page_loadsample.c | 1068 | ported | js/page_loadsample.js: editable preview fields (keyjazz preview), instrument files as sample libraries |
 | schism/page_log.c | 349 | ported | js/page_misc.js |
-| schism/page_message.c | 893 | ported | js/page_message.js (no drag selection) |
+| schism/page_message.c | 893 | ported | js/page_message.js; drag selection, Ctrl-C copies it to the system clipboard |
 | schism/page_midi.c | 378 | ported | js/page_midi.js |
 | schism/page_midiout.c | 179 | ported | js/page_midi.js |
 | schism/page_orderpan.c | 1068 | ported | js/page_orderpan.js |
 | schism/page_palette.c | 312 | ported | js/page_palette.js |
-| schism/page_patedit.c | 4790 | ported | js/page_patedit.js (MIDI recording; no pattern-to-sample) |
+| schism/page_patedit.c | 4790 | ported | js/page_patedit.js (MIDI recording, pattern to sample, options saved) |
 | schism/page_preferences.c | 396 | ported | js/page_config.js (one Web Audio device) |
-| schism/page_samples.c | 2100 | ported | js/page_samples.js (no AdLib dialogs, no text synth) |
+| schism/page_samples.c | 2100 | ported | js/page_samples.js (text synth, AdLib config and patch dialogs) |
 | schism/page_timeinfo.c | 232 | ported | js/page_timeinfo.js |
 | schism/page_vars.c | 243 | ported | js/page_vars.js |
 | schism/page_waterfall.c | 577 | ported | js/page_waterfall.js: waterfall and FFT spectrum |
@@ -144,14 +144,14 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | fmt/au.c | 247 | ported | js/fmt/samples.js + savers.js |
 | fmt/avformat.c | 689 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | fmt/brr.c | 238 | ported | sample loading in js/fmt/samples.js |
-| fmt/bzip2.c | 199 | todo |  |
+| fmt/bzip2.c | 199 | replaced | js/fmt/unpack.js: own bzip2 decoder |
 | fmt/compression.c | 779 | partial | IT 2.14/2.15 decompression in js/fmt/loaders.js; MDL/DMF not ported |
 | fmt/d00.c | 939 | ported | js/fmt/loaders2.js (guards the C endless loop on truncated pattern data) |
 | fmt/dsm.c | 444 | ported | js/fmt/loaders2.js |
 | fmt/edl.c | 91 | todo |  |
 | fmt/f2r.c | 49 | ported | file info only, js/fmt/info.js |
 | fmt/far.c | 292 | ported | js/fmt/loaders2.js |
-| fmt/flac.c | 918 | todo |  |
+| fmt/flac.c | 918 | replaced | js/fmt/flac.js: own encoder (fixed predictors, Rice, stereo decorrelation) and decoder (incl. LPC); upstream metadata (riff xtra/smpl, Vorbis comments) |
 | fmt/generic.c | 589 | partial | js/fmt/loaders.js |
 | fmt/gstreamer.c | 647 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
 | fmt/iff.c | 371 | partial | chunk reading in js/fmt/loaders2.js |
@@ -174,13 +174,13 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | fmt/ntk.c | 47 | ported | file info only, js/fmt/info.js |
 | fmt/ogg.c | 162 | todo |  |
 | fmt/okt.c | 509 | ported | js/fmt/loaders2.js |
-| fmt/pat.c | 304 | todo |  |
+| fmt/pat.c | 304 | ported | js/fmt/info.js |
 | fmt/psm.c | 1421 | ported | js/fmt/loaders2.js (new PSM, Sinaria, PSM16) |
 | fmt/raw.c | 64 | ported | js/fmt/info.js + savers.js |
 | fmt/s3i.c | 274 | ported | js/fmt/samples.js + savers.js |
 | fmt/s3m.c | 1217 | ported | js/fmt/loaders.js + savers.js |
 | fmt/sbi.c | 106 | ported | js/fmt/samples.js + savers.js |
-| fmt/sf2.c | 356 | todo |  |
+| fmt/sf2.c | 356 | ported | js/fmt/info.js (loop points made sample-relative; upstream leaves them absolute) |
 | fmt/sfx.c | 285 | ported | js/fmt/loaders2.js |
 | fmt/stm.c | 296 | ported | js/fmt/loaders2.js |
 | fmt/stx.c | 337 | ported | js/fmt/loaders2.js (no test file found) |
@@ -188,8 +188,8 @@ Song-length calculation now uses copied inline playback state and the tick engin
 | fmt/w64.c | 246 | ported | sample loading in js/fmt/samples.js |
 | fmt/wav.c | 526 | ported | js/fmt/info.js + savers.js |
 | fmt/win32mf.c | 1153 | n/a | platform plumbing with no browser equivalent, or a native-library wrapper |
-| fmt/xi.c | 572 | partial | loader in js/fmt/info.js |
+| fmt/xi.c | 572 | ported | js/fmt/info.js (loader) + savers.js (fmt_xi_save_instrument) |
 | fmt/xm.c | 959 | ported | loader in js/fmt/loaders.js |
-| fmt/xz.c | 193 | todo |  |
-| fmt/zlib.c | 205 | todo |  |
-| fmt/zstd.c | 230 | todo |  |
+| fmt/xz.c | 193 | replaced | js/fmt/unpack.js: own xz/LZMA2 decoder |
+| fmt/zlib.c | 205 | replaced | browser DecompressionStream (gzip) in js/fmt/mmcmp.js |
+| fmt/zstd.c | 230 | replaced | js/fmt/unpack.js: own zstd decoder (no dictionaries) |

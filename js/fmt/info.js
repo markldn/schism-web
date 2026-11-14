@@ -150,6 +150,166 @@ const last_module_info = [
 ];
 const first_match = (list, b) => { for (const f of list) { const r = f(b); if (r) return r; } return null; };
 
+// fmt/pat.c: Gravis Ultrasound patches
+function pat_header_ok(b) {
+	return b.length >= 239 && tag(b, 0, 'GF1PATCH') && (tag(b, 8, '110\0') || tag(b, 8, '100\0')) && tag(b, 12, 'ID#000002\0');
+}
+function pat_info(b) {
+	if (!pat_header_ok(b)) return null;
+	return { type: TYPE_INST_OTHER, title: str(b, 131, 16), description: 'Gravis Patch File', sampsize: Math.max(1, Math.min(16, b[198])) };
+}
+const gus_scale_table = [
+	16351, 17323, 18354, 19445, 20601, 21826, 23124, 24499, 25956, 27500, 29135, 30867,
+	32703, 34647, 36708, 38890, 41203, 43653, 46249, 48999, 51913, 54999, 58270, 61735,
+	65406, 69295, 73416, 77781, 82406, 87306, 92498, 97998, 103826, 109999, 116540, 123470,
+	130812, 138591, 146832, 155563, 164813, 174614, 184997, 195997, 207652, 219999, 233081, 246941,
+	261625, 277182, 293664, 311126, 329627, 349228, 369994, 391995, 415304, 440000, 466163, 493883,
+	523251, 554365, 587329, 622254, 659255, 698456, 739989, 783991, 830609, 880000, 932328, 987767,
+	1046503, 1108731, 1174660, 1244509, 1318511, 1396914, 1479979, 1567983, 1661220, 1760002, 1864657, 1975536,
+	2093007, 2217464, 2349321, 2489019, 2637024, 2793830, 2959960, 3135968, 3322443, 3520006, 3729316, 3951073,
+	4186073, 4434930, 4698645, 4978041, 5274051, 5587663, 5919922, 6271939, 6644889, 7040015, 7458636, 7902150,
+	0xFFFFFFFF,
+];
+function gusfreq(freq) {
+	for (let no = 0; gus_scale_table[no] !== 0xFFFFFFFF; no++)
+		if (gus_scale_table[no] <= freq && gus_scale_table[no + 1] >= freq) return no - 12;
+	return 4 * 12;
+}
+function load_pat(b, new_sample) {
+	if (!pat_header_ok(b)) return null;
+	const ins = csf_allocate_instrument();
+	ins.name = str(b, 131, 15);
+	const nsamp = Math.max(1, Math.min(16, b[198]));
+	for (let i = 0; i < 120; i++) { ins.sample_map[i] = 0; ins.note_map[i] = i + 1; }
+	const fp = fp_open(b);
+	fp.position = 239;
+	const samples = [];
+	for (let i = 0; i < nsamp; i++) {
+		const p = fp.position;
+		if (p + 96 > b.length) return null;
+		let samplesize = u32(b, p + 8), loopstart = u32(b, p + 12), loopend = u32(b, p + 16);
+		const samplerate = u16(b, p + 20), lofreq = u32(b, p + 22), hifreq = u32(b, p + 26);
+		const vib_speed = b[p + 52], vib_rate = b[p + 53], vib_depth = b[p + 54], smpmode = b[p + 55];
+		fp.position = p + 96;
+		const n = i + 1, smp = new_sample();
+		let lo = Math.max(0, Math.min(95, gusfreq(lofreq))), hi = Math.max(0, Math.min(95, gusfreq(hifreq)));
+		if (lo > hi) [lo, hi] = [hi, lo];
+		for (; lo < hi; lo++) ins.sample_map[lo + 12] = n;
+		if (smpmode & 1) { samplesize >>>= 1; loopstart >>>= 1; loopend >>>= 1; }
+		smp.length = samplesize;
+		smp.loop_start = smp.sustain_start = loopstart;
+		smp.loop_end = smp.sustain_end = loopend;
+		smp.c5speed = samplerate;
+		smp.flags = 0;
+		const rs = C.SF_M | C.SF_LE | (smpmode & 1 ? C.SF_16 : C.SF_8) | (smpmode & 2 ? C.SF_PCMU : C.SF_PCMS);
+		if (smpmode & 32) {
+			if (smpmode & 4) smp.flags |= C.CHN_SUSTAINLOOP;
+			if (smpmode & 8) smp.flags |= C.CHN_PINGPONGSUSTAIN;
+		} else {
+			if (smpmode & 4) smp.flags |= C.CHN_LOOP;
+			if (smpmode & 8) smp.flags |= C.CHN_PINGPONGLOOP;
+		}
+		smp.filename = str(b, p, 7);
+		smp.name = smp.filename;
+		smp.vib_speed = vib_speed; smp.vib_rate = vib_rate; smp.vib_depth = vib_depth;
+		read_sample(smp, rs, fp);
+		samples.push(smp);
+	}
+	return { ins, samples };
+}
+
+// fmt/sf2.c: SoundFont 2 as a bank of samples (no key mapping, as upstream)
+function sf2_read(b) {
+	if (b.length < 12 || !tag(b, 0, 'RIFF') || !tag(b, 8, 'sfbk')) return null;
+	// riff_chunk_peek: { id, offset (data start), size }; chunks are padded to even sizes
+	const chunks = (start, end) => {
+		const out = [];
+		for (let p = start; p + 8 <= Math.min(end, b.length);) {
+			const size = u32(b, p + 4);
+			out.push({ id: String.fromCharCode(b[p], b[p + 1], b[p + 2], b[p + 3]), offset: p + 8, size });
+			p += 8 + size + (size & 1);
+		}
+		return out;
+	};
+	let cINFO = null, csdta = null, cpdta = null;
+	for (const c of chunks(12, b.length)) {
+		if (c.id !== 'LIST' || c.size < 4) continue;
+		const id = String.fromCharCode(b[c.offset], b[c.offset + 1], b[c.offset + 2], b[c.offset + 3]);
+		if (id === 'INFO') cINFO = c; else if (id === 'sdta') csdta = c; else if (id === 'pdta') cpdta = c;
+	}
+	if (!cINFO || !csdta || !cpdta) return null; /* definitely not sf2 */
+	const cs = {};
+	for (const c of chunks(cINFO.offset + 4, cINFO.offset + cINFO.size)) {
+		if (c.id === 'INAM') cs.INAM = c;
+		else if (c.id === 'ifil') {
+			if (c.size !== 4) return null;
+			if ((u32(b, c.offset) & 0xffff) !== 2) return null; /* v1 and v3 are not tested */
+		}
+	}
+	for (const c of chunks(cpdta.offset + 4, cpdta.offset + cpdta.size)) if (c.id === 'shdr') cs.shdr = c;
+	if (!cs.shdr || cs.shdr.size % 46) return null;
+	for (const c of chunks(csdta.offset + 4, csdta.offset + csdta.size)) if (c.id === 'smpl') cs.smpl = c;
+	if (!cs.smpl) return null;
+	return cs;
+}
+function sf2_info(b) {
+	const cs = sf2_read(b);
+	if (!cs) return null;
+	return { type: TYPE_INST_OTHER, title: cs.INAM ? str(b, cs.INAM.offset, cs.INAM.size) : '', description: 'SoundFont2',
+		sampsize: cs.shdr.size / 46 };
+}
+function load_sf2(b, new_sample) {
+	const cs = sf2_read(b);
+	if (!cs) return null;
+	const nsmp = cs.shdr.size / 46, smpl_words = Math.floor(cs.smpl.size / 2);
+	const ins = csf_allocate_instrument();
+	ins.name = cs.INAM ? str(b, cs.INAM.offset, Math.min(cs.INAM.size, 15)) : '';
+	for (let i = 0; i < 120; i++) { ins.sample_map[i] = 0; ins.note_map[i] = i + 1; }
+	const samples = [];
+	const rec = i => {
+		const p = cs.shdr.offset + i * 46;
+		return { name: str(b, p, 20), start: u32(b, p + 20), end: u32(b, p + 24), loop_start: u32(b, p + 28), loop_end: u32(b, p + 32),
+			rate: u32(b, p + 36), note: b[p + 40], cents: (b[p + 41] << 24) >> 24, link: u16(b, p + 42), type: u16(b, p + 44) };
+	};
+	for (let i = 0; i < nsmp; i++) {
+		const h = rec(i);
+		if (h.type !== 1 && h.type !== 2) continue; /* left stereo, linked, ROM: unsupported */
+		if (h.end > smpl_words || h.end < h.start) continue; /* invalid ?? */
+		const smp = new_sample();
+		smp.name = h.name.slice(0, 25);
+		smp.length = h.end - h.start;
+		if (h.loop_start | h.loop_end) {
+			// shdr loop points are absolute positions in the smpl chunk (upstream stores them
+			// unchanged, which puts the loop outside the sample); make them sample-relative
+			smp.flags |= C.CHN_LOOP;
+			smp.loop_start = Math.max(0, h.loop_start - h.start);
+			smp.loop_end = Math.max(0, h.loop_end - h.start);
+		}
+		/* transpose the frequency; also account for the cents. hopefully the sample is now a middle C */
+		smp.c5speed = Math.trunc(h.rate * Math.pow(2, ((60 - h.note) - h.cents / 100) / 12)) >>> 0;
+		const fp = fp_open(b);
+		if (h.type === 1) {
+			fp.position = cs.smpl.offset + h.start * 2;
+			read_sample(smp, C.SF_16 | C.SF_M | C.SF_LE | C.SF_PCMS, fp);
+		} else {
+			/* right channel of a stereo pair: the linked record holds the left one */
+			const l = h.link < nsmp ? rec(h.link) : h;
+			const n = Math.min(smp.length, Math.max(0, l.end - l.start));
+			const data = new Int16Array(smp.length * 2);
+			for (let j = 0; j < smp.length; j++) {
+				const lo = cs.smpl.offset + (l.start + j) * 2, ro = cs.smpl.offset + (h.start + j) * 2;
+				data[j * 2] = j < n && lo + 1 < b.length ? (b[lo] | (b[lo + 1] << 8)) << 16 >> 16 : 0;
+				data[j * 2 + 1] = ro + 1 < b.length ? (b[ro] | (b[ro + 1] << 8)) << 16 >> 16 : 0;
+			}
+			smp.flags |= C.CHN_16BIT | C.CHN_STEREO;
+			smp.data = data;
+		}
+		csf_adjust_sample_loop(smp);
+		samples.push(smp);
+	}
+	return { ins, samples };
+}
+
 // returns { type, title, description, ...sample info } or null
 export function dmoz_file_info(base, b) {
 	const ext = (base.split('.').pop() || '').toLowerCase();
@@ -163,9 +323,10 @@ export function dmoz_file_info(base, b) {
 	if (es) return es;
 	if (b.length >= 12 && tag(b, 0, 'FORM') && tag(b, 8, 'AIFC')) return { type: TYPE_SAMPLE_COMPR, title: base, description: 'Audio IFF (compressed)' };
 	if (b.length >= 12 && tag(b, 0, 'RIFF') && tag(b, 8, 'WAVE')) return { type: TYPE_SAMPLE_COMPR, title: base, description: 'IBM/Microsoft RIFF Audio' };
-	if (tag(b, 0, 'fLaC')) return { type: TYPE_SAMPLE_COMPR, title: base, description: 'FLAC Audio' };
+	if (tag(b, 0, 'fLaC')) return { type: TYPE_SAMPLE_COMPR, title: base, description: 'FLAC Audio File' };
 	if (b.length >= 554 && tag(b, 0, 'IMPI')) return { type: TYPE_INST_ITI, title: str(b, 32, 26), description: 'Impulse Tracker Instrument' };
-	if (b.length >= 0x150 && tag(b, 0, 'Extended Instrument: ')) return { type: TYPE_INST_XI, title: str(b, 21, 22), description: 'Fast Tracker Instrument' };
+	if (b.length >= 0x12a && tag(b, 0, 'Extended Instrument: ') && b[0x2b] === 0x1a && u16(b, 0x40) === 0x0102)
+		return { type: TYPE_INST_XI, title: str(b, 0x15, 22), description: 'Fasttracker II Instrument', sampsize: u16(b, 0x128) };
 	const m2 = first_match(late_module_info, b) || s3i_info(b) || first_match(later_module_info, b);
 	if (m2) return m2;
 	if (tag(b, 0, 'OggS')) return { type: TYPE_SAMPLE_COMPR, title: base, description: 'Ogg Audio' };
@@ -174,6 +335,8 @@ export function dmoz_file_info(base, b) {
 	if (tag(b, 0, 'ID3') || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0 && ext === 'mp3')) return { type: TYPE_SAMPLE_COMPR, title: base, description: 'MPEG Layer 3' };
 	const br = brr_info(b);
 	if (br) return br;
+	const gi = pat_info(b) || sf2_info(b);
+	if (gi) return gi;
 	if (['ptm', 'amf', 'dmf'].includes(ext))
 		return { type: TYPE_UNKNOWN, title: '', description: ext.toUpperCase() + ' (not supported)' };
 	return { type: TYPE_UNKNOWN, title: '', description: 'Unknown / raw data' };
@@ -249,6 +412,7 @@ export function fmt_load_instrument(base, b, new_sample) {
 		return { ins, samples };
 	}
 	if (info.type === TYPE_INST_XI) return load_xi(b, base, new_sample);
+	if (info.type === TYPE_INST_OTHER) return pat_header_ok(b) ? load_pat(b, new_sample) : load_sf2(b, new_sample);
 	// a plain sample becomes a one-sample instrument
 	const smp = new_sample();
 	if (!fmt_load_sample(base, b, smp)) return null;
@@ -258,63 +422,86 @@ export function fmt_load_instrument(base, b, new_sample) {
 	return { ins, samples: [smp] };
 }
 
+// fmt/xi.c: fmt_xi_load_instrument
 function load_xi(b, base, new_sample) {
 	const ins = csf_allocate_instrument();
-	ins.name = str(b, 21, 22);
-	const map = b.subarray(0x42, 0x42 + 96);
+	ins.name = str(b, 0x15, 22);
+	const snum = Array.from(b.subarray(0x42, 0x42 + 96), v => Math.min(v, 15));
+	const nsamples = u16(b, 0x128);
+	for (let k = 0; k < 96; k++) {
+		ins.note_map[k + 12] = k + 1 + 12;
+		ins.sample_map[k + 12] = snum[k] < nsamples ? snum[k] + 1 : 0;
+	}
+	for (let k = 0; k < 12; k++) {
+		ins.note_map[k] = ins.sample_map[k] = 0;
+		ins.note_map[k + 108] = ins.sample_map[k + 108] = 0;
+	}
+	const vtype = b[0x10a], ptype = b[0x10b];
+	if (vtype & 1) ins.flags |= C.ENV_VOLUME;
+	if (vtype & 2) ins.flags |= C.ENV_VOLSUSTAIN;
+	if (vtype & 4) ins.flags |= C.ENV_VOLLOOP;
+	if (ptype & 1) ins.flags |= C.ENV_PANNING;
+	if (ptype & 2) ins.flags |= C.ENV_PANSUSTAIN;
+	if (ptype & 4) ins.flags |= C.ENV_PANLOOP;
+	const copy_env = (env, off, num) => {
+		let prevtick = -1;
+		for (let k = 0; k < num; k++) {
+			const ticks = u16(b, off + k * 4), val = u16(b, off + k * 4 + 2);
+			if (ticks < prevtick) prevtick++; else prevtick = ticks;
+			env.ticks[k] = prevtick; env.values[k] = val;
+		}
+		env.nodes = num;
+	};
+	copy_env(ins.vol_env, 0xa2, Math.min(b[0x102], 12));
+	copy_env(ins.pan_env, 0xd2, Math.min(b[0x103], 12));
+	ins.vol_env.sustain_start = b[0x104]; ins.vol_env.loop_start = b[0x105]; ins.vol_env.loop_end = b[0x106];
+	ins.pan_env.sustain_start = b[0x107]; ins.pan_env.loop_start = b[0x108]; ins.pan_env.loop_end = b[0x109];
+	const vibtype = b[0x10c], vibsweep = b[0x10d], vibdepth = b[0x10e], vibrate = b[0x10f];
 	const fp = fp_open(b);
-	const env = (off, n) => { const e = []; for (let i = 0; i < 12; i++) e.push([u16(b, off + i * 4), u16(b, off + i * 4 + 2)]); return e; };
-	const venv = env(0xa2), penv = env(0xd2);
-	const vn = b[0x102], pn = b[0x103];
-	ins.vol_env.nodes = Math.min(vn, 12); ins.pan_env.nodes = Math.min(pn, 12);
-	for (let i = 0; i < 12; i++) {
-		ins.vol_env.ticks[i] = venv[i][0]; ins.vol_env.values[i] = Math.min(venv[i][1], 64);
-		ins.pan_env.ticks[i] = penv[i][0]; ins.pan_env.values[i] = Math.min(penv[i][1], 64);
-	}
-	ins.vol_env.sustain_start = ins.vol_env.sustain_end = b[0x104];
-	ins.vol_env.loop_start = b[0x105]; ins.vol_env.loop_end = b[0x106];
-	ins.pan_env.sustain_start = ins.pan_env.sustain_end = b[0x107];
-	ins.pan_env.loop_start = b[0x108]; ins.pan_env.loop_end = b[0x109];
-	const vt = b[0x10a], pt = b[0x10b];
-	if (vt & 1) ins.flags |= C.ENV_VOLUME;
-	if (vt & 2) ins.flags |= C.ENV_VOLSUSTAIN;
-	if (vt & 4) ins.flags |= C.ENV_VOLLOOP;
-	if (pt & 1) ins.flags |= C.ENV_PANNING;
-	if (pt & 2) ins.flags |= C.ENV_PANSUSTAIN;
-	if (pt & 4) ins.flags |= C.ENV_PANLOOP;
-	ins.fadeout = u16(b, 0x110);
-	const nsmp = u16(b, 0x14a);
-	fp.position = 0x150;
-	const hdrs = [];
-	for (let i = 0; i < nsmp; i++) {
-		const p = fp.position;
-		const h = { length: u32(b, p), loop_start: u32(b, p + 4), loop_len: u32(b, p + 8), vol: b[p + 12],
-			finetune: (b[p + 13] << 24) >> 24, type: b[p + 14], pan: b[p + 15], relnote: (b[p + 16] << 24) >> 24, name: str(b, p + 18, 22) };
-		hdrs.push(h);
-		fp.position += 40;
-	}
+	let smpdataoffset = 0x12a + 40 * nsamples;
 	const samples = [];
-	for (const h of hdrs) {
+	for (let k = 0; k < nsamples; k++) {
+		const p = 0x12a + 40 * k;
+		if (p + 40 > b.length) break;
+		let samplen = u32(b, p), loopstart = u32(b, p + 4), looplen = u32(b, p + 8);
+		const vol = b[p + 12], finetune = (b[p + 13] << 24) >> 24, pan = b[p + 15], relnote = (b[p + 16] << 24) >> 24;
+		let type = b[p + 14];
+		const rs = C.SF_LE | C.SF_PCMD | (type & 0x20 ? C.SF_SS : C.SF_M) | (type & 0x10 ? C.SF_16 : C.SF_8);
+		if (type & 0x10) { looplen >>>= 1; loopstart >>>= 1; samplen >>>= 1; }
+		if (type & 0x20) { looplen >>>= 1; loopstart >>>= 1; samplen >>>= 1; }
+		if (loopstart >= samplen) type &= ~3;
+		looplen = (looplen + loopstart) >>> 0;
+		if (looplen > samplen) looplen = samplen;
+		if (!looplen) type &= ~3;
 		const smp = new_sample();
-		smp.name = h.name;
-		smp.volume = Math.min(h.vol, 64) * 4;
-		smp.panning = h.pan;
+		smp.flags = 0;
+		smp.name = str(b, p + 18, 21);
+		smp.length = samplen;
+		smp.loop_start = loopstart;
+		smp.loop_end = looplen;
+		if (smp.loop_end < smp.loop_start) smp.loop_end = smp.length;
+		if (smp.loop_start >= smp.loop_end) smp.loop_start = smp.loop_end = 0;
+		switch (type & 3) {
+		case 3: case 2: smp.flags |= C.CHN_PINGPONGLOOP; // fall through
+		case 1: smp.flags |= C.CHN_LOOP; break;
+		}
+		smp.volume = Math.min(vol << 2, 256);
+		smp.global_volume = 64;
+		smp.panning = pan;
 		smp.flags |= C.CHN_PANNING;
-		smp.c5speed = transpose_to_frequency(h.relnote, h.finetune);
-		const sixteen = h.type & 0x10;
-		smp.length = sixteen ? h.length >> 1 : h.length;
-		smp.loop_start = sixteen ? h.loop_start >> 1 : h.loop_start;
-		smp.loop_end = smp.loop_start + (sixteen ? h.loop_len >> 1 : h.loop_len);
-		if (h.type & 3) smp.flags |= C.CHN_LOOP | ((h.type & 3) === 2 ? C.CHN_PINGPONGLOOP : 0);
-		const pos = fp.position;
-		read_sample(smp, C.SF_LE | C.SF_M | C.SF_PCMD | (sixteen ? C.SF_16 : C.SF_8), fp);
-		fp.position = pos + h.length;
+		smp.vib_type = vibtype;
+		smp.vib_speed = Math.min(vibrate, 64);
+		smp.vib_depth = Math.min(vibdepth, 32);
+		if (vibrate | vibdepth) {
+			if (vibsweep) smp.vib_rate = Math.max(0, Math.min(255, Math.floor((smp.vib_depth * 256 + (vibsweep >> 1)) / vibsweep)));
+			else smp.vib_rate = 255;
+		}
+		smp.c5speed = transpose_to_frequency(relnote, finetune);
+		if (smp.length) {
+			fp.position = smpdataoffset;
+			smpdataoffset += read_sample(smp, rs, fp);
+		}
 		samples.push(smp);
-	}
-	for (let n = 0; n < 120; n++) ins.sample_map[n] = n >= 12 && n < 108 && map[n - 12] < samples.length ? map[n - 12] + 1 : 0;
-	if (!(ins.flags & C.ENV_VOLUME)) {
-		ins.vol_env.ticks[0] = 0; ins.vol_env.ticks[1] = 1; ins.vol_env.values[0] = 64; ins.vol_env.values[1] = 0;
-		ins.vol_env.nodes = 2; ins.flags |= C.ENV_VOLUME | C.ENV_VOLSUSTAIN;
 	}
 	void base;
 	return { ins, samples };

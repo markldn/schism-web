@@ -1,3 +1,4 @@
+import { unpack_bzip2_xz_zstd } from './unpack.js';
 // fmt/mmcmp.c: ziRCONia MMCMP module unpacker (Schism Tracker, GPL-2.0-or-later).
 // mmcmp_unpack(bytes) returns the unpacked file, or null if it isn't MMCMP data.
 
@@ -104,7 +105,7 @@ export function mmcmp_unpack(b) {
 	return buffer.subarray(0, filesize);
 }
 
-// slurp.c's decompression step: gzip (via the browser) then MMCMP.
+// slurp.c's decompression step: gzip (via the browser), bzip2, xz, zstd, then MMCMP.
 export async function slurp_unpack(data) {
 	let d = data;
 	if (d.length > 18 && d[0] === 0x1f && d[1] === 0x8b && typeof DecompressionStream !== 'undefined') {
@@ -113,5 +114,6 @@ export async function slurp_unpack(data) {
 			d = new Uint8Array(await new Response(s).arrayBuffer());
 		} catch { d = data; }
 	}
+	d = unpack_bzip2_xz_zstd(d) || d;
 	return mmcmp_unpack(d) || (d !== data ? d : null);
 }

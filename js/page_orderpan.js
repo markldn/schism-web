@@ -295,6 +295,13 @@ function orderlist_handle_key_on_list(k) {
 	case KEYSYM.u:
 		if (k.mod & KEYMOD.ALT) { if (rel) return 1; orderlist_add_unused_patterns(); return 1; }
 		return 0;
+	case KEYSYM.b:
+	case KEYSYM.o:
+		if (k.sym === KEYSYM.b && (k.mod & KEYMOD.SHIFT)) return 0;
+		if (!(k.mod & KEYMOD.CTRL)) return 0;
+		if (rel) return 1;
+		app.song_pattern_to_sample(ol[current_order], !!(k.mod & KEYMOD.SHIFT), k.sym === KEYSYM.b);
+		return 1;
 	case KEYSYM.LESS: case KEYSYM.SEMICOLON: case KEYSYM.COLON:
 		if (!nm) return 0; if (rel) return 1;
 		app.sample_set(app.sample_get_current() - 1); status.flags |= NEED_UPDATE; return 1;

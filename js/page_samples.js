@@ -1,6 +1,5 @@
 // Port of schism/page_samples.c (Schism Tracker, GPL-2.0-or-later).
-// Not ported: AdLib config/patch dialogs (no OPL emulator yet) and the text
-// synth (Alt-Y). Saving samples goes through app.song_save_sample (download).
+// Saving samples goes to the virtual disk and the browser's downloads.
 import { app, provide, optional } from './app.js';
 import * as C from './sndconst.js';
 import { status, PAGE, HELP, NEED_UPDATE, SONG_NEEDS_SAVE, CLASSIC_MODE, DIALOG_OK, DIALOG_OK_CANCEL, DIALOG_YES_NO } from './state.js';
@@ -12,7 +11,9 @@ import { widget_create_other, widget_create_thumbbar, widget_create_toggle, widg
 	widget_create_numentry, widget_create_menutoggle, widget_create_togglebutton, widget_create_button,
 	widget_togglebutton_set, widget_change_focus_to, text_add_char, text_delete_char, text_delete_next_char,
 	MOUSE_SCROLL_LINES, str_from_num, str_from_num99 } from './widget.js';
-import { dialog_create, dialog_create_custom, dialog_yes_NULL, dialog_cancel_NULL, smpprompt_create } from './dialog.js';
+import { dialog_create, dialog_create_custom, dialog_yes_NULL, dialog_cancel_NULL, smpprompt_create, numprompt_create, dialog_destroy_all } from './dialog.js';
+import { adlib_patch_apply } from './fmt/loaders2.js';
+import { sample_host_dialog } from './page_loadsample.js';
 import { pages, set_page } from './page.js';
 import { current_song, song_get_sample, song_get_instrument, song_get_playing_samples, song_swap_samples,
 	song_exchange_samples, song_copy_sample, song_replace_sample, song_clear_sample, song_keydown, song_keyup,
@@ -58,6 +59,9 @@ function _last_vis_sample() {
 function sample_list_reposition() {
 	if (current_sample < top_sample) top_sample = Math.max(1, current_sample);
 	else if (current_sample > top_sample + 34) top_sample = current_sample - 34;
+	if (dialog_f1_hack && status.current_page === PAGE.SAMPLE_LIST && status.previous_page === PAGE.HELP)
+		sample_adlibconfig_dialog();
+	dialog_f1_hack = 0;
 }
 export const sample_get_current = () => current_sample;
 export function sample_set(n) {
@@ -424,6 +428,148 @@ function export_sample_dialog() {
 	d.action_yes = () => sample_save(export_filename.value, sample_save_formats[export_sample_format].label);
 }
 
+// text synth (Alt-Y)
+const txtsynth_entry = { value: '' };
+function do_txtsynth() {
+	const text = txtsynth_entry.value, len = text.length;
+	if (!len) return;
+	const sample = song_get_sample(current_sample);
+	if (sample.data) csf_stop_sample(current_song, sample);
+	sample.data = new Int8Array(len);
+	for (let i = 0; i < len; i++) sample.data[i] = (text.charCodeAt(i) << 24) >> 24;
+	sample.length = len;
+	sample.loop_start = 0;
+	sample.loop_end = len;
+	sample.sustain_start = sample.sustain_end = 0;
+	sample.flags |= C.CHN_LOOP;
+	sample.flags &= ~(C.CHN_PINGPONGLOOP | C.CHN_SUSTAINLOOP | C.CHN_PINGPONGSUSTAIN | C.CHN_16BIT | C.CHN_STEREO | C.CHN_ADLIB);
+	csf_adjust_sample_loop(sample);
+	sample_host_dialog(-1);
+	status.flags |= SONG_NEEDS_SAVE;
+}
+function txtsynth_draw_const() {
+	draw_text('Enter a text string (e.g. ABCDCB for a triangle-wave)', 13, 27, 0, 2);
+	draw_box(12, 29, 66, 31, BOX_THIN | BOX_INNER | BOX_INSET);
+}
+function txtsynth_dialog() {
+	txtsynth_entry.value = '';
+	const w = [
+		widget_create_textentry(13, 30, 53, 0, 1, 1, null, txtsynth_entry, 65535),
+		widget_create_button(31, 33, 6, 0, 1, 2, 2, 2, dialog_yes_NULL, 'OK', 3),
+		widget_create_button(41, 33, 6, 0, 2, 1, 1, 1, dialog_cancel_NULL, 'Cancel', 1),
+	];
+	const d = dialog_create_custom(9, 25, 61, 11, w, 3, 0, txtsynth_draw_const, null);
+	d.action_yes = do_txtsynth;
+}
+
+// AdLib melodic instrument parameters (Alt-Z) and patch prompt (Shift-Alt-Z)
+const adlib_xpos = [26, 30, 58, 62, 39];
+const adlib_cursorpos = [0, 1, 2, 3, 4].map(() => ({ value: 0 }));
+const yn_toggle = ['n', 'y'];
+const N = 0, B = 1, WS = 3; // OPL3 build
+const adlibconfig_widgets = [
+	[4, 3, B, 10, 0, 1], [4, 4, N, 10, 1, 3],
+	[0, 7, N, 5, 4, 4], [0, 8, N, 5, 0, 4], [0, 9, N, 7, 4, -4], [0, 10, N, 7, 0, 4], [0, 11, B, 1, 5, 1], [0, 12, N, 3, 0, -6],
+	[1, 7, N, 4, 4, 4], [1, 8, N, 4, 0, 4], [1, 9, N, 6, 4, -4], [1, 10, N, 6, 0, 4], [1, 11, B, 0, 5, 1], [1, 12, N, 2, 0, -6],
+	[2, 7, B, 1, 4, 1], [2, 8, N, 3, 6, 2], [2, 9, N, 1, 0, 4], [2, 10, N, 9, 0, WS], [2, 11, B, 1, 6, 1], [2, 12, B, 1, 7, 1],
+	[3, 7, B, 0, 4, 1], [3, 8, N, 2, 6, 2], [3, 9, N, 0, 0, 4], [3, 10, N, 8, 0, WS], [3, 11, B, 0, 6, 1], [3, 12, B, 0, 7, 1],
+].map(([xref, y, type, byteno, firstbit, nbits]) => ({ xref, y, type, byteno, firstbit, nbits }));
+let sample_adlibconfig_widgets = [];
+let dialog_f1_hack = 0;
+function do_adlibconfig() {
+	const sample = song_get_sample(current_sample);
+	if (sample.data) csf_stop_sample(current_song, sample);
+	// dumb hackaround that ought to some day be fixed:
+	sample.data = new Int8Array(1);
+	sample.length = 1;
+	if (!(sample.flags & C.CHN_ADLIB)) { sample.flags |= C.CHN_ADLIB; flash('Created adlib sample'); }
+	sample.flags &= ~(C.CHN_16BIT | C.CHN_STEREO | C.CHN_LOOP | C.CHN_PINGPONGLOOP | C.CHN_SUSTAINLOOP | C.CHN_PINGPONGSUSTAIN);
+	sample.loop_start = sample.loop_end = 0;
+	sample.sustain_start = sample.sustain_end = 0;
+	if (!sample.c5speed) { sample.c5speed = 8363; sample.volume = 64 * 4; sample.global_volume = 64; }
+	sample_host_dialog(-1);
+	status.flags |= SONG_NEEDS_SAVE;
+}
+function adlibconfig_refresh() {
+	const sample = song_get_sample(current_sample);
+	if (!sample.adlib_bytes) sample.adlib_bytes = new Uint8Array(12);
+	SE.draw_sample_data(sample_image, sample);
+	adlibconfig_widgets.forEach((a, i) => {
+		const nbits_real = a.nbits < 0 ? -a.nbits : a.nbits, maxvalue = (1 << nbits_real) - 1;
+		const w = sample_adlibconfig_widgets[i];
+		let srcvalue = a.type === B ? w.d.state : w.d.value;
+		if (a.nbits < 0) srcvalue = maxvalue - srcvalue; // reverse the semantics
+		srcvalue = (srcvalue & maxvalue) << a.firstbit;
+		const maskvalue = (0xffff & maxvalue) << a.firstbit;
+		sample.adlib_bytes[a.byteno] = (sample.adlib_bytes[a.byteno] & ~maskvalue) | srcvalue;
+	});
+}
+function sample_adlibconfig_draw_const() {
+	const labels = [
+		[19, 1, 'Adlib Melodic Instrument Parameters'], [19, 3, 'Additive Synthesis:'], [18, 4, 'Modulation Feedback:'],
+		[26, 6, 'Car Mod'], [19, 7, 'Attack'], [20, 8, 'Decay'], [18, 9, 'Sustain'], [18, 10, 'Release'],
+		[12, 11, 'Sustain Sound'], [19, 12, 'Volume'], [58, 6, 'Car Mod'], [43, 7, 'Scale Envelope'],
+		[44, 8, 'Level Scaling'], [37, 9, 'Frequency Multiplier'], [46, 10, 'Wave Select'], [44, 11, 'Pitch Vibrato'],
+		[43, 12, 'Volume Vibrato'],
+	];
+	draw_box(38, 2 + 30, 40, 5 + 30, BOX_THIN | BOX_INNER | BOX_INSET);
+	draw_fill_chars(25, 6 + 30, 32, 13 + 30, DEFAULT_FG, 0);
+	draw_box(25, 6 + 30, 28, 13 + 30, BOX_THIN | BOX_INNER | BOX_INSET);
+	draw_box(29, 6 + 30, 32, 13 + 30, BOX_THIN | BOX_INNER | BOX_INSET);
+	draw_fill_chars(57, 6 + 30, 64, 13 + 30, DEFAULT_FG, 0);
+	draw_box(57, 6 + 30, 60, 13 + 30, BOX_THIN | BOX_INNER | BOX_INSET);
+	draw_box(61, 6 + 30, 64, 13 + 30, BOX_THIN | BOX_INNER | BOX_INSET);
+	labels.forEach(([x, y, label], a) => draw_text(label, x, y + 30, a ? 0 : 3, 2));
+}
+function do_adlib_handlekey(kk) {
+	if (kk.sym === KEYSYM.F1) {
+		if (kk.state === KEY_PRESS) return 1;
+		status.current_help_index = HELP.ADLIB_SAMPLE;
+		dialog_f1_hack = 1;
+		dialog_destroy_all();
+		set_page(PAGE.HELP);
+		return 1;
+	}
+	return 0;
+}
+function sample_adlibconfig_dialog() {
+	const sample = song_get_sample(current_sample);
+	const bytes = sample.adlib_bytes || new Uint8Array(12);
+	const n = adlibconfig_widgets.length;
+	sample_adlibconfig_widgets = adlibconfig_widgets.map((a, i) => {
+		const nbits_real = a.nbits < 0 ? -a.nbits : a.nbits, maxvalue = (1 << nbits_real) - 1;
+		let srcvalue = (bytes[a.byteno] >> a.firstbit) & maxvalue;
+		if (a.nbits < 0) srcvalue = maxvalue - srcvalue; // reverse the semantics
+		const up = i > 0 ? i - 1 : 0, down = i + 1 < n ? i + 1 : i;
+		const tab = i > 1 ? ((i + 4) % (n - 2)) + 2 : 2;
+		let w;
+		if (a.type === B) {
+			w = widget_create_menutoggle(adlib_xpos[a.xref], a.y + 30, up, down, i, i, tab, adlibconfig_refresh, yn_toggle);
+			w.d.state = srcvalue;
+			w.d.activation_keys = 'ny';
+		} else {
+			w = widget_create_numentry(adlib_xpos[a.xref], a.y + 30, nbits_real < 4 ? 1 : 2, up, down, tab, adlibconfig_refresh,
+				0, maxvalue, adlib_cursorpos[a.xref]);
+			w.d.value = srcvalue;
+		}
+		return w;
+	});
+	const d = dialog_create_custom(9, 30, 61, 15, sample_adlibconfig_widgets, n, 0, sample_adlibconfig_draw_const, null);
+	d.action_yes = do_adlibconfig;
+	d.handle_key = do_adlib_handlekey;
+}
+function sample_adlibpatch_finish(n) {
+	if (n <= 0 || n > 128) return;
+	const sample = song_get_sample(current_sample);
+	csf_stop_sample(current_song, sample);
+	adlib_patch_apply(sample, n - 1);
+	status.flags |= NEED_UPDATE | SONG_NEEDS_SAVE; // redraw the sample
+	sample_host_dialog(-1);
+}
+function sample_adlibpatch_dialog() {
+	numprompt_create('Enter Patch (1-128)', sample_adlibpatch_finish, 0);
+}
+
 function sample_list_handle_alt_key(k) {
 	const sample = cur(), canmod = sample.data && !(sample.flags & C.CHN_ADLIB);
 	if (k.state === KEY_RELEASE) return;
@@ -468,8 +614,13 @@ function sample_list_handle_alt_key(k) {
 		return;
 	case KEYSYM.w: sample_save('RAW'); return;
 	case KEYSYM.x: smpprompt_create('Exchange sample with:', 'Sample', do_exchange_sample); return;
-	case KEYSYM.y: flash('Text synth is not available in this port'); return;
-	case KEYSYM.z: flash('AdLib samples are not available in this port'); return;
+	case KEYSYM.y: /* hi virt */ txtsynth_dialog(); return;
+	case KEYSYM.z: { // uguu~
+		const dlg = (k.mod & KEYMOD.SHIFT) ? sample_adlibpatch_dialog : sample_adlibconfig_dialog;
+		if (canmod) dialog_create(DIALOG_OK_CANCEL, 'This will replace the current sample.', dlg, null, 1, null);
+		else dlg();
+		return;
+	}
 	case KEYSYM.INSERT: song_insert_sample_slot(current_sample); break;
 	case KEYSYM.DELETE: song_remove_sample_slot(current_sample); break;
 	case KEYSYM.F9: sample_toggle_mute(current_sample); break;

@@ -1,5 +1,5 @@
 // Port of schism/page_instruments.c (Schism Tracker, GPL-2.0-or-later).
-// Instrument saving goes through app.song_save_instrument (a download).
+// Saved instruments go to the virtual disk and the browser's downloads.
 import { app, provide, optional } from './app.js';
 import * as C from './sndconst.js';
 import { status, PAGE, HELP, NEED_UPDATE, SONG_NEEDS_SAVE, CLASSIC_MODE, DIALOG_NONE, DIALOG_OK_CANCEL } from './state.js';
@@ -12,7 +12,12 @@ import { widget_create_other, widget_create_thumbbar, widget_create_toggle, widg
 	widget_create_numentry, widget_create_menutoggle, widget_create_togglebutton, widget_create_button,
 	widget_create_bitset, widget_togglebutton_set, widget_change_focus_to, text_add_char, text_delete_char,
 	text_delete_next_char, MOUSE_SCROLL_LINES, str_from_num99 } from './widget.js';
-import { dialog_create, dialog_create_custom, dialog_cancel_NULL, smpprompt_create } from './dialog.js';
+import { dialog_create, dialog_create_custom, dialog_yes_NULL, dialog_cancel_NULL, smpprompt_create } from './dialog.js';
+import { instrument_save_formats } from './fmt/savers.js';
+import { ui } from './widget.js';
+import { dmoz_path_concat, dmoz_path_get_basename, dmoz_file_exists, dmoz_write_file, download_file } from './dmoz.js';
+import { cfg as dir_cfg } from './page_loadmodule.js';
+import { DIR_INSTRUMENTS_CHANGED } from './state.js';
 import { pages, set_page, ilist } from './page.js';
 import { current_song, song_get_instrument, song_get_playing_instruments, song_swap_instruments,
 	song_exchange_instruments, song_copy_instrument, song_replace_instrument, song_keydown, song_keyup,
@@ -795,16 +800,89 @@ function pitch_pan_center_draw() {
 	draw_text(get_note_string(cur().pitch_pan_center + 1), 54, 45, app.active_page().selected_widget === 16 ? 3 : 2, 0);
 }
 
-function instrument_save(format) {
+// filename can be null, in which case the instrument filename is used (quick save)
+function instrument_save(filename, format) {
 	const ins = cur();
-	if (!ins.filename && !ins.name) { flash('Instrument NOT saved! (No Filename?)'); return; }
-	app.song_save_instrument(null, format, ins, current_instrument);
+	let path;
+	if (filename) path = dmoz_path_concat(dir_cfg.dir_instruments || '/', filename);
+	else if (ins.filename) path = dmoz_path_concat(dir_cfg.dir_instruments || '/', ins.filename);
+	else { flash(`Error: Instrument ${current_instrument} NOT saved! (No Filename?)`); return; }
+	const go = () => song_save_instrument(path, format, song_get_instrument(current_instrument), current_instrument);
+	if (dmoz_file_exists(path)) dialog_create(DIALOG_OK_CANCEL, 'Overwrite file?', go, null, 1, null);
+	else go();
+}
+
+// audio_loadsave.c: song_save_instrument (the file also goes to the browser's downloads)
+export function song_save_instrument(path, type, ins, num) {
+	const err = why => flash(`Error: Instrument ${num} NOT saved! (${why})`);
+	const fmt = instrument_save_formats.find(f => f.label === type);
+	if (!fmt) return;
+	if (!path || !dmoz_path_get_basename(path)) { err('No Filename?'); return; }
+	const bytes = fmt.save(current_song, ins);
+	if (!bytes) { err('File Error'); return; }
+	dmoz_write_file(path, bytes);
+	download_file(dmoz_path_get_basename(path), bytes);
+	status.flags |= DIR_INSTRUMENTS_CHANGED;
+	flash(`${fmt.name} instrument saved (instrument ${num})`);
+}
+
+// export instrument dialog (Alt-T)
+let export_instrument_format = 0;
+const export_instrument_filename = { value: '' };
+let export_instrument_widgets = [];
+function export_instrument_list_draw() {
+	const focused = ui.holder.selected_widget === 3;
+	draw_fill_chars(53, 24, 56, 31, DEFAULT_FG, 0);
+	instrument_save_formats.forEach((f, n) => {
+		let fg = 6, bg = 0;
+		if (focused && n === export_instrument_format) { fg = 0; bg = 3; }
+		else if (n === export_instrument_format) bg = 14;
+		draw_text_len(f.label, 4, 53, 24 + n, fg, bg);
+	});
+}
+function export_instrument_list_handle_key(k) {
+	let nf = export_instrument_format;
+	if (k.state === KEY_RELEASE) return 0;
+	switch (k.sym) {
+	case KEYSYM.UP: if (!NO_MODIFIER(k.mod)) return 0; nf--; break;
+	case KEYSYM.DOWN: if (!NO_MODIFIER(k.mod)) return 0; nf++; break;
+	case KEYSYM.PAGEUP: case KEYSYM.HOME: if (!NO_MODIFIER(k.mod)) return 0; nf = 0; break;
+	case KEYSYM.PAGEDOWN: case KEYSYM.END: if (!NO_MODIFIER(k.mod)) return 0; nf = instrument_save_formats.length - 1; break;
+	case KEYSYM.TAB:
+		if (k.mod & KEYMOD.SHIFT) { widget_change_focus_to(0); return 1; }
+		// fall through
+	case KEYSYM.LEFT: case KEYSYM.RIGHT:
+		if (!NO_MODIFIER(k.mod)) return 0;
+		widget_change_focus_to(0);
+		return 1;
+	default: return 0;
+	}
+	nf = Math.max(0, Math.min(instrument_save_formats.length - 1, nf));
+	if (nf !== export_instrument_format) { export_instrument_format = nf; status.flags |= NEED_UPDATE; }
+	return 1;
+}
+function export_instrument_draw_const() {
+	draw_text('Export Instrument', 34, 21, 0, 2);
+	draw_text('Filename', 24, 24, 0, 2);
+	draw_box(32, 23, 51, 25, BOX_THICK | BOX_INNER | BOX_INSET);
+	draw_box(52, 23, 57, 32, BOX_THICK | BOX_INNER | BOX_INSET);
+}
+function export_instrument_dialog() {
+	export_instrument_filename.value = cur().filename || '';
+	export_instrument_widgets = [
+		widget_create_textentry(33, 24, 18, 0, 1, 3, null, export_instrument_filename, 255),
+		widget_create_button(31, 35, 6, 0, 1, 2, 2, 2, dialog_yes_NULL, 'OK', 3),
+		widget_create_button(42, 35, 6, 3, 2, 1, 1, 1, dialog_cancel_NULL, 'Cancel', 1),
+		widget_create_other(0, export_instrument_list_handle_key, null, export_instrument_list_draw),
+	];
+	const d = dialog_create_custom(21, 20, 39, 18, export_instrument_widgets, 4, 0, export_instrument_draw_const, null);
+	d.action_yes = () => instrument_save(export_instrument_filename.value, instrument_save_formats[export_instrument_format].label);
 }
 function instrument_list_handle_alt_key(k) {
 	if (k.state === KEY_RELEASE) return;
 	switch (k.sym) {
 	case KEYSYM.n: song_toggle_multichannel_mode(); return;
-	case KEYSYM.o: instrument_save('ITI'); return;
+	case KEYSYM.o: instrument_save(null, 'ITI'); return;
 	case KEYSYM.r: smpprompt_create('Replace instrument with:', 'Instrument', n => { if (valid(n)) song_replace_instrument(current_instrument, n); }); return;
 	case KEYSYM.s: smpprompt_create('Swap instrument with: ', 'Instrument', n => { if (valid(n)) song_swap_instruments(current_instrument, n); }); return;
 	case KEYSYM.x: smpprompt_create('Exchange instrument with:', 'Instrument', n => { if (valid(n)) song_exchange_instruments(current_instrument, n); }); return;
@@ -814,7 +892,7 @@ function instrument_list_handle_alt_key(k) {
 		if (k.mod & KEYMOD.SHIFT) dialog_create(DIALOG_OK_CANCEL, 'Delete Instrument? (preserve shared samples)', () => song_delete_instrument(current_instrument, 1), null, 1, null);
 		else dialog_create(DIALOG_OK_CANCEL, 'Delete Instrument?', () => song_delete_instrument(current_instrument, 0), null, 1, null);
 		return;
-	case KEYSYM.t: instrument_save('ITI'); break;
+	case KEYSYM.t: export_instrument_dialog(); return;
 	default: return;
 	}
 	status.flags |= NEED_UPDATE;

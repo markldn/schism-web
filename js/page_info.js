@@ -291,12 +291,39 @@ const click_chn_is_y = (x, y, nc, fc) => { if (y) selected_channel = clamp(y + f
 const click_chn_nil = () => {};
 
 const window_types = [
-	{ draw: info_draw_samples, click: click_chn_is_y_nohead, first_row: 0, channels: -2 },
-	...[5, 8, 10, 12, 18, 24, 36, 64].map(n => ({ draw: track_view(n), click: click_chn_is_x, first_row: 1, channels: n })),
-	{ draw: info_draw_channels, click: click_chn_nil, first_row: 1, channels: 0 },
-	{ draw: info_draw_note_dots, click: click_chn_is_y_nohead, first_row: 0, channels: -2 },
-	{ draw: info_draw_technical, click: click_chn_is_y, first_row: 1, channels: -2 },
+	{ id: 'samples', draw: info_draw_samples, click: click_chn_is_y_nohead, first_row: 0, channels: -2 },
+	...[5, 8, 10, 12, 18, 24, 36, 64].map(n => ({ id: `track${n}`, draw: track_view(n), click: click_chn_is_x, first_row: 1, channels: n })),
+	{ id: 'global', draw: info_draw_channels, click: click_chn_nil, first_row: 1, channels: 0 },
+	{ id: 'dots', draw: info_draw_note_dots, click: click_chn_is_y_nohead, first_row: 0, channels: -2 },
+	{ id: 'tech', draw: info_draw_technical, click: click_chn_is_y, first_row: 1, channels: -2 },
 ];
+
+// page_info.c: cfg_save_info / cfg_load_info ("Info Page", "layout" = "samples 19 global 3 track24 15")
+export function cfg_save_info() {
+	return windows.slice(0, num_windows).map(w => `${window_types[w.type].id} ${w.height}`).join(' ');
+}
+export function cfg_load_info(layout) {
+	if (typeof layout !== 'string') return;
+	const parts = layout.trim().split(/[ \t]+/);
+	let n = 0;
+	for (let i = 0; i + 1 < parts.length && n < MAX_WINDOWS; i += 2) {
+		const type = window_types.findIndex(t => t.id.toLowerCase() === parts[i].toLowerCase());
+		if (type < 0) break;
+		const h = parseInt(parts[i + 1], 10);
+		if (!(h >= 3)) break;
+		windows[n++] = { type, height: h, first_channel: 1 };
+	}
+	if (!n) {
+		/* Fall back to defaults */
+		n = 3;
+		windows[0] = { type: 0, height: 19, first_channel: 1 };
+		windows[1] = { type: 9, height: 3, first_channel: 1 };
+		windows[2] = { type: 6, height: 15, first_channel: 1 };
+	}
+	num_windows = n;
+	recalculate_windows();
+	if (status.current_page === PAGE.INFO) status.flags |= NEED_UPDATE;
+}
 
 function _fix_channels(n) {
 	const w = windows[n];
@@ -457,4 +484,4 @@ function info_page_handle_key(k) {
 Object.assign(pages[PAGE.INFO], { title: 'Info Page (F5)', ported: true, help_index: HELP.INFO_PAGE,
 	playback_update: () => { if (song_get_mode() !== MODE_STOPPED) status.flags |= NEED_UPDATE; },
 	widgets: [widget_create_other(0, info_page_handle_key, null, info_page_redraw)], total_widgets: 1 });
-provide({});
+provide({ cfg_save_info, cfg_load_info,});

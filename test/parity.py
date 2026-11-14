@@ -61,6 +61,16 @@ CASES = [
     ("font-charmap", ["Shift+F12", "F3", "ArrowRight", "ArrowDown"], [("font editor", 0, 0, 79, 45)]),
     ("font-preview", ["Shift+F12", "F4", "Home", "ArrowRight"], [("font editor", 0, 0, 79, 45)]),
     ("font-edit", ["Shift+F12", "Alt+z", "Home", "Space", "Shift+ArrowRight", "BracketRight", "Alt+i"], [("font editor", 0, 0, 79, 45)]),
+    ("txtsynth-dialog", ["F3", "Alt+y", "A", "B", "C", "D", "C", "B"], [("dialog", 9, 25, 69, 35)]),
+    ("txtsynth-sample", ["F3", "Alt+y", "A", "B", "C", "D", "C", "B", "Tab", "Enter"], [BODY]),
+    ("adlib-config", ["F3", "Alt+z"], [("dialog", 9, 30, 69, 44)]),
+    ("adlib-config-edit", ["F3", "Alt+z", "y", "Tab", "5", "ArrowDown", "9", "Tab", "1", "2"], [("dialog", 9, 30, 69, 44)]),
+    ("adlib-config-done", ["F3", "Alt+z", "y", "Tab", "5", "Enter", "Escape"], [BODY]),
+    ("adlib-patch", ["F3", "Shift+Alt+z", "1", "7", "Enter"], [BODY]),
+    # right-hand preview panel (the file list itself differs: browser store vs real disk)
+    ("load-sample-panel", ["F3", "Enter"], [("preview", 51, 14, 77, 42)]),
+    ("load-sample-widgets", ["F3", "Enter", "Tab", "Tab", "1", "2", "Tab", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowRight", "ArrowRight"], [("preview", 51, 14, 77, 42)]),
+    ("export-instrument", ["F4", "Alt+t", "x", "ArrowDown", "Tab", "Tab", "Tab"], [("dialog", 21, 20, 59, 37)]),
 ]
 
 def serve(directory, port):

@@ -162,3 +162,35 @@ body = re.search(r'patches\[\]\[11\]\s*=\s*\{(.*?)\};', fmp, re.S).group(1)
 rows = [[int(v.strip(), 0) for v in row.split(',') if v.strip()] for row in re.findall(r'\{([^{}]*)\}', body)]
 assert len(rows) == 128 and all(len(r) == 11 for r in rows), (len(rows),)
 (OUT / 'fmpatches.js').write_text(HDR + 'export const fm_patches = Object.freeze(' + json.dumps(rows) + '.map(r => Uint8Array.from(r)));\n')
+
+# ---- charset.c: digraphs and Unicode -> CP437 -------------------------------
+charset = (SRC / 'schism/charset.c').read_text()
+dg_body = charset.split('int char_digraph(', 1)[1].split('\n}\n', 1)[0]
+def c_char(v):
+    v = v.strip()
+    if v.startswith("'"):
+        inner = v[1:-1]
+        return ord(inner.encode().decode('unicode_escape')) if inner.startswith('\\') else ord(inner)
+    return int(v, 0)
+digraphs = []
+for pair, value in re.findall(r'DG\("((?:[^"\\]|\\.)*)",\s*([^)]+?)\)', dg_body):
+    pair = pair.encode().decode('unicode_escape')
+    assert len(pair) == 2, pair
+    digraphs.append([pair, c_char(value)])
+assert len(digraphs) == 72, len(digraphs)
+def switch_map(func):
+    body = re.sub(r'/\*.*?\*/|//[^\n]*', '', charset.split('int ' + func + '(', 1)[1].split('\n}\n', 1)[0], flags=re.S)
+    out, pending = {}, []
+    for tok in re.findall(r"case\s+(0x[0-9a-fA-F]+|\d+)\s*:|return\s+(0x[0-9a-fA-F]+|\d+|'[^']')\s*;", body):
+        if tok[0]: pending.append(int(tok[0], 0))
+        elif pending:
+            for u in pending: out[u] = ord(tok[1][1]) if tok[1].startswith("'") else int(tok[1], 0)
+            pending = []
+    return out
+cp437 = switch_map('char_unicode_to_cp437')
+itf = switch_map('char_unicode_to_itf')
+assert len(cp437) >= 128 and len(itf) >= 128, (len(cp437), len(itf))
+(OUT / 'charset.js').write_text(HDR
+    + 'export const DIGRAPHS = Object.freeze(' + json.dumps(digraphs) + ');\n'
+    + 'export const UNICODE_TO_CP437 = new Map(' + json.dumps(sorted(cp437.items())) + ');\n'
+    + 'export const UNICODE_TO_ITF = new Map(' + json.dumps(sorted(itf.items())) + ');\n')

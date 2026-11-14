@@ -10,7 +10,7 @@ import { kbd_sharp_flat_state, kbd_sharp_flat_toggle, KBD_SHARP_FLAT_FLATS, KBD_
 import { widget_create_thumbbar, widget_create_numentry, widget_create_menutoggle, widget_create_toggle,
 	widget_create_togglebutton, widget_create_button, widget_create_listbox } from './widget.js';
 import { pages } from './page.js';
-import { current_song, audio_settings, song_init_modplug, audio_sample_rate } from './song.js';
+import { current_song, audio_settings, song_init_modplug, audio_sample_rate, audio_reinit, audio_is_running } from './song.js';
 import { song_init_eq } from './equalizer.js';
 import { current_palette, current_palette_index, palette_apply, palette_load_preset, set_current_palette_index } from './palettes.js';
 import { cfg as dirs } from './page_loadmodule.js';
@@ -28,10 +28,26 @@ export function cfg_save(quiet) {
 		flats: kbd_sharp_flat_state() === KBD_SHARP_FLAT_FLATS ? 1 : 0, octave: kbd_get_current_octave(),
 		palette: current_palette.map(c => c.slice()), palette_index: current_palette_index, video: { ...video }, dirs: { ...dirs },
 		midi: optional('cfg_get_midi'),
+		info_layout: optional('cfg_save_info'), patedit: optional('cfg_save_patedit'),
 	};
 	try { localStorage.setItem('schism-config', JSON.stringify(data)); if (!quiet) flash('Configuration saved'); }
 	catch { flash('Could not save configuration (browser storage blocked)'); }
 }
+// config.c: cfg_atexit_save. The browser's closest thing to exiting is the page
+// being hidden for unload; only the settings C writes at exit are updated here.
+export function cfg_atexit_save() {
+	let data;
+	try { data = JSON.parse(localStorage.getItem('schism-config') || 'null'); } catch { data = null; }
+	data = data || {};
+	Object.assign(data, {
+		audio: { ...audio_settings, master: { ...audio_settings.master } },
+		vis_style: status.vis_style, time_display: status.time_display,
+		classic: status.flags & CLASSIC_MODE ? 1 : 0, midi_like_tracker: status.flags & MIDI_LIKE_TRACKER ? 1 : 0,
+		flats: kbd_sharp_flat_state() === KBD_SHARP_FLAT_FLATS ? 1 : 0, video: { ...video },
+	});
+	try { localStorage.setItem('schism-config', JSON.stringify(data)); } catch { /* storage blocked */ }
+}
+if (typeof window !== 'undefined') window.addEventListener('pagehide', cfg_atexit_save);
 export function cfg_load() {
 	let data;
 	try { data = JSON.parse(localStorage.getItem('schism-config') || 'null'); } catch { data = null; }
@@ -46,6 +62,8 @@ export function cfg_load() {
 	if (data.palette) { data.palette.forEach((c, i) => { if (current_palette[i]) current_palette[i] = c.slice(); }); if (data.palette_index !== undefined) set_current_palette_index(data.palette_index); palette_apply(); }
 	if (data.video) { Object.assign(video, data.video); apply_video_interpolation(); }
 	if (data.dirs) Object.assign(dirs, data.dirs);
+	try { if (data.info_layout !== undefined) optional('cfg_load_info', data.info_layout); } catch (e) { console.warn('info layout', e); }
+	try { if (data.patedit) optional('cfg_load_patedit', data.patedit); } catch (e) { console.warn('pattern editor settings', e); }
 }
 function apply_video_interpolation() {
 	const c = document.getElementById('screen');
@@ -60,13 +78,18 @@ const output_channels = ['Mono', 'Stereo'];
 const bit_rates = ['8 Bit', '16 Bit', '32 Bit'];
 const midi_modes = ['IT semantics', 'Tracker semantics'];
 const wc = [];
+let rate_timer = 0;
 function change_mixer_limits() {
 	audio_settings.channel_limit = wc[0].d.value;
 	audio_settings.sample_rate = wc[1].d.value;
 	audio_settings.bits = [8, 16, 32][wc[2].d.state] || 16;
 	audio_settings.channels = wc[3].d.state + 1;
 	song_init_modplug();
-	flash(audio_settings.sample_rate !== audio_sample_rate() ? 'Mixing rate applies after a reload; ' + SAVED : SAVED);
+	flash(SAVED);
+	// the browser can only change the rate by opening a new AudioContext; wait until typing stops
+	clearTimeout(rate_timer);
+	if (audio_settings.sample_rate !== audio_sample_rate() && audio_is_running())
+		rate_timer = setTimeout(() => { if (audio_settings.sample_rate !== audio_sample_rate()) audio_reinit(); }, 800);
 }
 function change_ui_settings() {
 	status.vis_style = wc[4].d.state;
