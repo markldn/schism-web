@@ -3,6 +3,9 @@
 Schism Tracker (an Impulse Tracker clone) rewritten in plain JavaScript: ES
 modules, a canvas and Web Audio. No WebAssembly and no build step.
 
+Unofficial port, not affiliated with the Schism Tracker project. The original
+is at https://schismtracker.org/ (source: https://github.com/schismtracker/schismtracker).
+
 Live: https://markldn.github.io/schism-web/
 
     ./serve.sh                 # then open http://127.0.0.1:8600/schism/
